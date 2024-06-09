@@ -1,32 +1,44 @@
-// Ensure that your macro reports a reasonable error message when the caller
-// mistypes the inert attribute in various ways. This is a compile_fail test.
+// Figure out what impl needs to be generated for the Debug impl of Field<T>.
+// This will involve adding a trait bound to the T type parameter of the
+// generated impl.
 //
-// The preferred way to report an error from a procedural macro is by including
-// an invocation of the standard library's compile_error macro in the code
-// emitted by the procedural macro.
+// Callers should be free to instantiate Field<T> with a type parameter T which
+// does not implement Debug, but such a Field<T> will not fulfill the trait
+// bounds of the generated Debug impl and so will not be printable via Debug.
 //
-// 当调用者以各种方式错误键入惰性属性时，确保您的宏报告合理的错误消息。
-// 这是一个compile_fail测试。
-// 从过程宏报告错误的首选方法是将标准库的compile_error宏的调用包含在过程宏发出的代码中。
-//
+// 弄清楚需要为Field<T>的Debug impl生成什么impl。
+// 这将涉及添加绑定到生成的impl的T类型参数的特征。
+// 调用者应该可以自由地使用不实现调试的类型参数T实例化字段<T>，
+// 但这样的字段<T>不会满足生成的调试输入的特征边界，因此无法通过调试打印。
 //
 // Resources:
 //
-//   - The compile_error macro for emitting basic custom errors:
-//     https://doc.rust-lang.org/std/macro.compile_error.html
+//   - Representation of generics in the Syn syntax tree:
+//     https://docs.rs/syn/2.0/syn/struct.Generics.html
 //
-//   - Lowering a syn::Error into an invocation of compile_error:
-//     https://docs.rs/syn/2.0/syn/struct.Error.html#method.to_compile_error
+//   - A helper for placing generics into an impl signature:
+//     https://docs.rs/syn/2.0/syn/struct.Generics.html#method.split_for_impl
+//
+//   - Example code from Syn which deals with type parameters:
+//     https://github.com/dtolnay/syn/tree/master/examples/heapsize
 
-use derive_builder::Builder;
+use derive_debug::CustomDebug;
 
-#[derive(Builder)]
-pub struct Command {
-    executable: String,
-    #[builder(eac = "arg")]
-    args: Vec<String>,
-    env: Vec<String>,
-    current_dir: Option<String>,
+#[derive(CustomDebug)]
+pub struct Field<T> {
+    value: T,
+    #[debug = "0b{:08b}"]
+    bitmask: u8,
 }
 
-fn main() {}
+fn main() {
+    let f = Field {
+        value: "F",
+        bitmask: 0b00011100,
+    };
+    // f.value
+    let debug = format!("{:?}", f);
+    let expected = r#"Field { value: "F", bitmask: 0b00011100 }"#;
+
+    assert_eq!(debug, expected);
+}

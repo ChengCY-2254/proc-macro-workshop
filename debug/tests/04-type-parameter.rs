@@ -6,6 +6,10 @@
 // does not implement Debug, but such a Field<T> will not fulfill the trait
 // bounds of the generated Debug impl and so will not be printable via Debug.
 //
+// 弄清楚需要为Field<T>的Debug impl生成什么impl。
+// 这将涉及添加绑定到生成的impl的T类型参数的特征。
+// 调用者应该可以自由地使用不实现调试的类型参数T实例化字段<T>，
+// 但这样的字段<T>不会满足生成的调试输入的特征边界，因此无法通过调试打印。
 //
 // Resources:
 //

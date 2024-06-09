@@ -6,6 +6,11 @@
 // but the trait impls it generates are for Debug. As a convention, typically
 // derive macros implement a trait with the same name as a macro.
 //
+// 为具有命名字段且没有泛型类型参数的基本结构实现std::fmt::Debug。
+// 请注意，派生宏的名称与其实现的特征之间没有强制关系。
+// 在这里，宏被命名为CustomDebug，但它生成的特质暗示是用于Debug的。
+// 作为惯例，通常派生宏实现与宏同名的特征。
+//
 //
 // Resources:
 //

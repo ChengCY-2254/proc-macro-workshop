@@ -13,6 +13,13 @@
 // simply looked at by other macro invocations.
 //
 //
+//在每个字段上查找字段属性[debug = "..."]。
+//如果存在，请找到一种方法，根据调用者在属性中给出的格式字符串格式化字段。
+//为了使编译器将此惰性属性识别为与您的派生宏相关联的属性，
+//需要在派生宏的入口点声明它。
+//[proc_macro_derive（CustomDebug，attributes(debug)）]这些被称为惰性属性。
+//“惰性”一词表示这些属性本身与宏调用不对应；它们只是通过其他宏调用来查看。
+//
 // Resources:
 //
 //   - Relevant syntax tree type:
