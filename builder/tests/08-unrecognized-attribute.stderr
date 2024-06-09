@@ -195,3 +195,94 @@ DeriveInput {
         semi_token: None,
     },
 }
+
+
+---------
+
+attr
+
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+[
+    Attribute {
+        pound_token: Pound,
+        style: AttrStyle::Outer,
+        bracket_token: Bracket,
+        meta: Meta::List {
+            path: Path {
+                leading_colon: None,
+                segments: [
+                    PathSegment {
+                        ident: Ident {
+                            ident: "builder",
+                            span: #0 bytes(2320..2327),
+                        },
+                        arguments: PathArguments::None,
+                    },
+                ],
+            },
+            delimiter: MacroDelimiter::Paren(
+                Paren,
+            ),
+            tokens: TokenStream [
+                syn::Attribute->syn::Meta::List->{syn::Path(segments[PathSegment(ident)]),tokens(Ident,Literal)}
+                Ident {
+                    ident: "each",
+                    span: #0 bytes(2328..2332),
+                },
+                Punct {
+                    ch: '=',
+                    spacing: Alone,
+                    span: #0 bytes(2333..2334),
+                },
+                Literal {
+                    kind: Str,
+                    symbol: "arg",
+                    suffix: None,
+                    span: #0 bytes(2335..2340),
+                },
+            ],
+        },
+    },
+]
+[
+    Attribute {
+        pound_token: Pound,
+        style: AttrStyle::Outer,
+        bracket_token: Bracket,
+        meta: Meta::List {
+            path: Path {
+                leading_colon: None,
+                segments: [
+                    PathSegment {
+                        ident: Ident {
+                            ident: "builder",
+                            span: #0 bytes(2372..2379),
+                        },
+                        arguments: PathArguments::None,
+                    },
+                ],
+            },
+            delimiter: MacroDelimiter::Paren(
+                Paren,
+            ),
+            tokens: TokenStream [
+                Ident {
+                    ident: "each",
+                    span: #0 bytes(2380..2384),
+                },
+                Punct {
+                    ch: '=',
+                    spacing: Alone,
+                    span: #0 bytes(2385..2386),
+                },
+                Literal {
+                    kind: Str,
+                    symbol: "env",
+                    suffix: None,
+                    span: #0 bytes(2387..2392),
+                },
+            ],
+        },
+    },
+]
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈

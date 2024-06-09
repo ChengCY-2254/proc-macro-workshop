@@ -5,6 +5,10 @@
 // an invocation of the standard library's compile_error macro in the code
 // emitted by the procedural macro.
 //
+// 当调用者以各种方式错误键入惰性属性时，确保您的宏报告合理的错误消息。
+// 这是一个compile_fail测试。
+// 从过程宏报告错误的首选方法是将标准库的compile_error宏的调用包含在过程宏发出的代码中。
+//
 //
 // Resources:
 //
