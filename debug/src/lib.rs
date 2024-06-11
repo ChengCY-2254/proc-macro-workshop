@@ -1,139 +1,81 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::MetaNameValue;
+use syn::parse_macro_input;
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let ast = syn::parse_macro_input!(input as syn::DeriveInput);
-    eprint!("{:#?}", ast);
-    let name = &ast.ident;
-    if let Some(fields) = take_struct_fields(&ast) {
-        let write_fn = fields.iter().map(|f| {
-            let name = &f.ident;
-            if let Some(syn::Attribute { meta, .. }) = check_attribute(f, "debug") {
-                if let syn::Meta::NameValue(MetaNameValue {
-                    path: _path,
-                    value: syn::Expr::Lit(literal),
-                    ..
-                }) = meta
-                {
-                    if let syn::Lit::Str(show_expressions) = &literal.lit {
-                        let template = " {}: [mark],".to_string();
+    let input = parse_macro_input!(input as syn::DeriveInput);
 
-                        let mut st = show_expressions.token().to_string();
-                        st.remove(0);
-                        st.remove(st.len() - 1);
-                        let template_format = template.replace("[mark]", &st);
-                        return quote! {
-                            text.push_str(
-                                &format!(#template_format,stringify!(#name),self.#name)
-                            );
-                        };
-                    }
-                }
-            }
-            quote! {
-                text.push_str(
-                    &format!(" {}: \"{}\",",stringify!(#name),self.#name)
-                );
-            }
-        });
-        return quote! {
-            impl std::fmt::Debug for #name{
-                #[inline]
-                fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
-                    let mut text = String::new();
-                    write!(f,"{} {{",stringify!(#name))?;
-                    #(#write_fn)*
-                    let _ =text.pop();
+    return match do_expand(&input) {
+        Ok(token_stream) => token_stream,
+        Err(e) => e.to_compile_error().into(),
+    };
+}
 
-                    text.push(' ');
-                    write!(f,"{}",text)?;
-                    write!(f,"}}")?;
-                    Ok(())
-                }
+fn do_expand(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
+    // eprintln!("{:#?}", ast);
+
+    let token_stream = dispatcher_input(ast);
+
+    Ok(token_stream.into())
+}
+
+/// 为结构体字段获取实现
+fn dispatcher_input(input: &syn::DeriveInput) -> proc_macro2::TokenStream {
+    let struct_name = &input.ident;
+    let fields_impl = if let syn::Data::Struct(syn::DataStruct { ref fields, .. }) = input.data {
+        match fields {
+            syn::Fields::Named(syn::FieldsNamed { ref named, .. }) => field_named_impl(named),
+            syn::Fields::Unnamed(syn::FieldsUnnamed { ref unnamed, .. }) => {
+                field_unnamed_impl(unnamed)
+            }
+            _ => {
+                panic!("empty fields")
             }
         }
-        .into();
-    }
-
-    panic!("Error Only used for Struct")
+    } else {
+        panic!("Must define on a Struct ,not Enum and Union")
+    };
+    generate_trait(struct_name, fields_impl)
 }
 
-fn take_struct_fields(ast: &syn::DeriveInput) -> Option<&syn::Fields> {
-    if let syn::Data::Struct(ref s) = ast.data {
-        return Some(&s.fields);
-    }
-    None
+fn field_named_impl(
+    named: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+) -> Option<proc_macro2::TokenStream> {
+    let field_impls = named.iter().map(|f| {
+        let field_name = f.ident.clone().unwrap();
+        let field_name_literal = field_name.to_string();
+        quote! {
+            .field(#field_name_literal,&self.#field_name)
+        }
+    });
+    Some(quote! {
+        #(#field_impls)*
+    })
 }
 
-// struct A {}
-
-// impl std::fmt::Debug for A {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         let mut text = format!("abc{}", 1);
-//         text.pop
-//     }
-// }
-
-/// 解析标签内容 格式为 #[ident punct literal]
-///                  #[debug = "0b{:08b}"]
-// struct LiteralAttribute {
-//     ident: syn::Ident,
-//     punct: proc_macro2::Punct,
-//     literal: syn::Lit,
-// }
-
-// impl syn::parse::Parse for LiteralAttribute {
-//     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-//         let ident: syn::Ident = input.call(syn::Ident::parse)?;
-//         let punct: proc_macro2::Punct = input.call(proc_macro2::Punct::parse)?;
-//         let literal: syn::Lit = input.call(syn::Lit::parse)?;
-//         Ok(Self {
-//             ident,
-//             punct,
-//             literal,
-//         })
-//     }
-// }
-
-// impl LiteralAttribute {
-//     fn parse_from_token_stream(token_stream: &proc_macro2::TokenStream) -> Option<Self> {
-//         let mut tt = token_stream.clone().into_iter();
-
-//         let ident = match tt.next().unwrap() {
-//             proc_macro2::TokenTree::Ident(ident) => ident,
-//             tt => panic!("expeted '{}',but found {}", "Ident", tt),
-//         };
-
-//         let punct = match tt.next().unwrap() {
-//             proc_macro2::TokenTree::Punct(punct) => punct,
-//             tt => panic!("expected '{}',but fount {}", "punct", tt),
-//         };
-
-//         let literal = match tt.next().expect("expected str") {
-//             proc_macro2::TokenTree::Literal(literal) => syn::Lit::new(literal),
-//             tt => panic!("expected string, but found {}", tt),
-//         };
-
-//         Some(Self {
-//             ident,
-//             punct,
-//             literal,
-//         })
-//     }
-// }
-/// 通过字段和一个标签来判断该字段上有没有这么一个标签，如果有，则返回该标签的ast节点，如果没有，就返回None
-fn check_attribute<'a>(f: &'a syn::Field, attr_str: &str) -> Option<&'a syn::Attribute> {
-    for attribute in f.attrs.iter() {
-        if let syn::Meta::NameValue(ref meta) = attribute.meta {
-            if meta.path.segments.is_empty() {
-                return None;
-            }
-            if &meta.path.segments[0].ident == attr_str {
-                return Some(attribute);
+fn field_unnamed_impl(
+    unnamed: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+) -> Option<proc_macro2::TokenStream> {
+    let field_indexes = (0..unnamed.len()).map(syn::Index::from);
+    let field_indexes_str = (0..unnamed.len()).map(|idx| format!("{}", idx));
+    Some(quote! {
+        #(.field(#field_indexes_str, &self.#field_indexes) )*
+    })
+}
+/// 生成trait实现
+fn generate_trait(
+    struct_name: &syn::Ident,
+    fields_impl: Option<proc_macro2::TokenStream>,
+) -> proc_macro2::TokenStream {
+    let struct_name_literal = struct_name.to_string();
+    quote! {
+        impl std::fmt::Debug for #struct_name{
+            fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
+                f.debug_struct(#struct_name_literal)
+                #fields_impl
+                .finish()
             }
         }
     }
-    None
 }

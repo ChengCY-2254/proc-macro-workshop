@@ -1,0 +1,137 @@
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{MetaNameValue, WhereClause};
+
+#[proc_macro_derive(CustomDebug, attributes(debug))]
+pub fn derive(input: TokenStream) -> TokenStream {
+    let ast = syn::parse_macro_input!(input as syn::DeriveInput);
+    eprint!("{:#?}", ast);
+    let name = &ast.ident;
+    if check_struct_generics(&ast) {
+        //拥有泛型的实现
+        if let Some(syn::DataStruct { fields: field, .. }) = take_struct_fields(&ast) {
+            let generics = &ast.generics;
+            return struct_fields_generics_impl(generics, field, name);
+        }
+    } else {
+        //未拥有泛型的实现
+        if let Some(syn::DataStruct { fields, .. }) = take_struct_fields(&ast) {
+            return struct_fields_none_generics_impl(fields, name);
+        }
+    }
+
+    panic!("Error Only used for Struct")
+}
+/// 传入结构体泛型参数和结构体的字段和结构体名称标识符
+fn struct_fields_generics_impl(
+    generics: &syn::Generics,
+    fields: &syn::Fields,
+    name: &syn::Ident,
+) -> TokenStream {
+    let write_fn = fields_impl(fields);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    quote! {
+        impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
+            #[inline]
+            fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
+                let mut text = String::new();
+                write!(f,"{} {{",stringify!(#name))?;
+                #(#write_fn)*
+                let _ =text.pop();
+
+                text.push(' ');
+                write!(f,"{}",text)?;
+                write!(f,"}}")?;
+                Ok(())
+            }
+
+        }
+    }
+    .into()
+}
+/// 生成结构体实现
+fn struct_fields_none_generics_impl(fields: &syn::Fields, name: &syn::Ident) -> TokenStream {
+    let write_fn = fields_impl(fields);
+    quote! {
+        impl std::fmt::Debug for #name{
+            #[inline]
+            fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
+                let mut text = String::new();
+                write!(f,"{} {{",stringify!(#name))?;
+                #(#write_fn)*
+                let _ =text.pop();
+
+                text.push(' ');
+                write!(f,"{}",text)?;
+                write!(f,"}}")?;
+                Ok(())
+            }
+        }
+    }
+    .into()
+}
+/// 实现对字段的写入方法
+fn fields_impl<'a>(
+    fields: &'a syn::Fields,
+) -> std::iter::Map<
+    syn::punctuated::Iter<syn::Field>,
+    impl FnMut(&'a syn::Field) -> Option<proc_macro2::TokenStream>,
+> {
+    let write_fn = fields.iter().map(|f| {
+        let name = &f.ident;
+        if let Some(syn::Attribute { meta, .. }) = check_attribute(f, "debug") {
+            if let syn::Meta::NameValue(MetaNameValue {
+                path: _path,
+                value: syn::Expr::Lit(literal),
+                ..
+            }) = meta
+            {
+                if let syn::Lit::Str(show_expressions) = &literal.lit {
+                    let template = " {}: [mark],".to_string();
+                    let mut st = show_expressions.token().to_string();
+                    st.remove(0);
+                    st.remove(st.len() - 1);
+                    let template_format = template.replace("[mark]", &st);
+                    return Some(quote! {
+                        text.push_str(
+                            &format!(#template_format,stringify!(#name),self.#name)
+                        );
+                    });
+                }
+            }
+        }
+        return Some(quote! {
+            text.push_str(
+                &format!(" {}: \"{}\",",stringify!(#name),self.#name)
+            );
+        });
+    });
+    write_fn
+}
+/// 获取struct结构体
+fn take_struct_fields(ast: &syn::DeriveInput) -> Option<&syn::DataStruct> {
+    if let syn::Data::Struct(ref s) = ast.data {
+        return Some(s);
+    }
+    None
+}
+
+/// 通过字段和一个标签来判断该字段上有没有这么一个标签，如果有，则返回该标签的ast节点，如果没有，就返回None
+fn check_attribute<'a>(f: &'a syn::Field, attr_str: &str) -> Option<&'a syn::Attribute> {
+    for attribute in f.attrs.iter() {
+        if let syn::Meta::NameValue(ref meta) = attribute.meta {
+            if meta.path.segments.is_empty() {
+                return None;
+            }
+            if meta.path.segments[0].ident == attr_str {
+                return Some(attribute);
+            }
+        }
+    }
+    None
+}
+/// 检查一个结构体是否拥有泛型
+fn check_struct_generics(f: &syn::DeriveInput) -> bool {
+    !f.generics.params.is_empty()
+}
