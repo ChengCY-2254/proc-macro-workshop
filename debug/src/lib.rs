@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned};
+use syn::{parse_macro_input, parse_quote, spanned::Spanned};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -37,7 +37,13 @@ fn dispatcher_input(input: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenS
             "Must define on a Struct ,not Enum and Union",
         ));
     };
-    Ok(generate_trait(struct_name, fields_impl))
+    let mut generics = input.generics.clone();
+    for g in generics.params.iter_mut() {
+        if let syn::GenericParam::Type(t) = g {
+            t.bounds.push(parse_quote!(std::fmt::Debug));
+        }
+    }
+    Ok(generate_trait(struct_name, fields_impl, generics))
 }
 /// 生成具名字段实现
 fn field_named_impl(
@@ -80,10 +86,12 @@ fn field_unnamed_impl(
 fn generate_trait(
     struct_name: &syn::Ident,
     fields_impl: proc_macro2::TokenStream,
+    generics: syn::Generics,
 ) -> proc_macro2::TokenStream {
     let struct_name_literal = struct_name.to_string();
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     quote! {
-        impl std::fmt::Debug for #struct_name{
+        impl #impl_generics std::fmt::Debug for #struct_name #ty_generics #where_clause{
             fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
                 f.debug_struct(#struct_name_literal)
                 #fields_impl
