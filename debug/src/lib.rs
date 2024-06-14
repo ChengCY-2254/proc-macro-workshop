@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, parse_quote, spanned::Spanned};
+use syn::{parse_macro_input, parse_quote, spanned::Spanned, Error};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -10,7 +10,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 }
 
 fn do_expand(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
-    // eprintln!("{:#?}", ast);
+    eprintln!("{:#?}", ast);
 
     // let token_stream = dispatcher_input(ast);
 
@@ -21,25 +21,44 @@ fn do_expand(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
 /// 为结构体字段获取实现
 fn dispatcher_input(input: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let struct_name = &input.ident;
-    let fields_impl = if let syn::Data::Struct(syn::DataStruct { ref fields, .. }) = input.data {
-        match fields {
-            syn::Fields::Named(syn::FieldsNamed { ref named, .. }) => field_named_impl(named),
-            syn::Fields::Unnamed(syn::FieldsUnnamed { ref unnamed, .. }) => {
-                field_unnamed_impl(unnamed)
+    let fields_impl = get_fields_from_driver_input(input, |f| match f {
+        syn::Fields::Named(syn::FieldsNamed { ref named, .. }) => Ok(field_named_impl(named)),
+        syn::Fields::Unnamed(syn::FieldsUnnamed { ref unnamed, .. }) => {
+            Ok(field_unnamed_impl(unnamed))
+        }
+        _ => {
+            return Err(syn::Error::new(input.span(), "struct fields check error"));
+        }
+    })
+    .map_err(|_| syn::Error::new(input.span(), "Must define on as Struct, not Enum and Union"))?;
+    // 存储字段的类型标识
+    let mut field_type_names = vec![];
+    // 存储某个特定类型的内部字段
+    let mut phantomdata_type_param_names = vec![];
+    get_fields_from_driver_input(input, |fields| {
+        for field in fields {
+            if let Some(s) = field_type_name(field) {
+                field_type_names.push(s.clone());
             }
-            _ => {
-                return Err(syn::Error::new(input.span(), "struct fields check error"));
+            if let Some(s) = ty_inner_type("PhantomData", &field.ty) {
+                if let syn::Type::Path(ty) = s {
+                    let ident = ty.path.segments[0].ident.clone();
+                    phantomdata_type_param_names.push(ident);
+                }
             }
         }
-    } else {
-        return Err(syn::Error::new(
-            input.span(),
-            "Must define on a Struct ,not Enum and Union",
-        ));
-    };
+        Ok(())
+    })?;
     let mut generics = input.generics.clone();
     for g in generics.params.iter_mut() {
         if let syn::GenericParam::Type(t) = g {
+            let type_param_name = &t.ident;
+
+            if phantomdata_type_param_names.contains(type_param_name)
+                && !field_type_names.contains(&type_param_name)
+            {
+                continue;
+            }
             t.bounds.push(parse_quote!(std::fmt::Debug));
         }
     }
@@ -57,7 +76,6 @@ fn field_named_impl(
             _ => "{:?}".to_string(),
         };
         quote! {
-            //.field(#field_name_literal,&self.#field_name)
             .field(#field_name_literal,&format_args!(#format_str,&self.#field_name))
         }
     });
@@ -78,7 +96,6 @@ fn field_unnamed_impl(
             _ => "{:?}".to_string(),
         });
     quote! {
-        // #(.field(#field_indexes_str, &self.#field_indexes) )*
          #(.field(#field_indexes_str, &format_args!(#field_format_strs,&self.#field_indexes)) )*
     }
 }
@@ -124,4 +141,48 @@ fn get_custom_format_of_field(field: &syn::Field, attribute: &str) -> syn::Resul
         }
     }
     Ok(None)
+}
+/// 获取一个类型的内部泛型，适用于单个泛型。
+fn ty_inner_type<'a>(wrapper: &str, ty: &'a syn::Type) -> Option<&'a syn::Type> {
+    if let syn::Type::Path(ref p) = ty {
+        if p.path.segments.len() != 1 || p.path.segments[0].ident != wrapper {
+            return None;
+        }
+        if let syn::PathArguments::AngleBracketed(ref inner_ty) = p.path.segments[0].arguments {
+            if inner_ty.args.len() != 1 {
+                return None;
+            }
+
+            let inner_ty = inner_ty.args.first().unwrap();
+            if let syn::GenericArgument::Type(ref t) = inner_ty {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+/// 获取字段的类型标识符
+fn field_type_name(field: &syn::Field) -> Option<&syn::Ident> {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { ref segments, .. },
+        ..
+    }) = field.ty
+    {
+        if segments.is_empty() {
+            return None;
+        }
+        return Some(&segments[0].ident);
+    }
+    None
+}
+
+/// 获取结构体字段并进行操作
+fn get_fields_from_driver_input<T, F>(driver_input: &syn::DeriveInput, mut f: F) -> syn::Result<T>
+where
+    F: FnMut(&syn::Fields) -> syn::Result<T>,
+{
+    if let syn::Data::Struct(syn::DataStruct { ref fields, .. }) = driver_input.data {
+        return f(fields);
+    }
+    syn::Result::Err(Error::new(driver_input.span(), "Only Struct can use"))
 }

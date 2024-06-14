@@ -23,28 +23,25 @@
 //     https://github.com/dtolnay/syn/tree/master/examples/heapsize
 
 use derive_debug::CustomDebug;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+
+type S = String;
 
 #[derive(CustomDebug)]
 pub struct Field<T> {
-    value: T,
+    marker: PhantomData<T>,
+    string: S,
     #[debug = "0b{:08b}"]
     bitmask: u8,
 }
-#[derive(CustomDebug)]
-pub struct F {
-    value: &'static str,
-    #[debug = "0b{:08b}"]
-    bitmask: u8,
-}
-fn main() {
-    let f = Field {
-        value: "F",
-        bitmask: 0b00011100,
-    };
-    // f.value
-    let debug = format!("{:?}", f);
-    println!("{}", debug);
-    let expected = r#"Field { value: "F", bitmask: 0b00011100 }"#;
 
-    assert_eq!(debug, expected);
+fn assert_debug<F: Debug>() {}
+
+fn main() {
+    // Does not implement Debug.
+    struct NotDebug;
+
+    assert_debug::<PhantomData<NotDebug>>();
+    assert_debug::<Field<NotDebug>>();
 }

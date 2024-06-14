@@ -3,6 +3,9 @@
 // inferring `#field_ty: Trait` bounds as mentioned in the previous test case is
 // not viable.
 //
+// 如果您到目前为止的所有内容都已通过，则此测试用例不应要求在宏中进行任何代码更改，
+// 但在这里是为了证明为什么推断上一个测试用例中提到的“#field_ty：特征”边界是不可行的。
+//
 //     #[derive(CustomDebug)]
 //     pub struct One<T> {
 //         value: T,
