@@ -1,47 +1,45 @@
-// Figure out what impl needs to be generated for the Debug impl of Field<T>.
-// This will involve adding a trait bound to the T type parameter of the
-// generated impl.
+// This test case covers one more heuristic that is often worth incorporating
+// into derive macros that infer trait bounds. Here we look for the use of an
+// associated type of a type parameter.
 //
-// Callers should be free to instantiate Field<T> with a type parameter T which
-// does not implement Debug, but such a Field<T> will not fulfill the trait
-// bounds of the generated Debug impl and so will not be printable via Debug.
+// The generated impl will need to look like:
 //
-// 弄清楚需要为Field<T>的Debug impl生成什么impl。
-// 这将涉及添加绑定到生成的impl的T类型参数的特征。
-// 调用者应该可以自由地使用不实现调试的类型参数T实例化字段<T>，
-// 但这样的字段<T>不会满足生成的调试输入的特征边界，因此无法通过调试打印。
+//     impl<T: Trait> Debug for Field<T>
+//     where
+//         T::Value: Debug,
+//     {...}
+//
+// You can identify associated types as any syn::TypePath in which the first
+// path segment is one of the type parameters and there is more than one
+// segment.
+//
 //
 // Resources:
 //
-//   - Representation of generics in the Syn syntax tree:
-//     https://docs.rs/syn/2.0/syn/struct.Generics.html
-//
-//   - A helper for placing generics into an impl signature:
-//     https://docs.rs/syn/2.0/syn/struct.Generics.html#method.split_for_impl
-//
-//   - Example code from Syn which deals with type parameters:
-//     https://github.com/dtolnay/syn/tree/master/examples/heapsize
+//   - The relevant types in the input will be represented in this syntax tree
+//     node: https://docs.rs/syn/2.0/syn/struct.TypePath.html
 
 use derive_debug::CustomDebug;
 use std::fmt::Debug;
-use std::marker::PhantomData;
 
-type S = String;
+pub trait Trait {
+    type Value;
+}
 
 #[derive(CustomDebug)]
-pub struct Field<T> {
-    marker: PhantomData<T>,
-    string: S,
-    #[debug = "0b{:08b}"]
-    bitmask: u8,
+pub struct Field<T: Trait> {
+    values: Vec<T::Value>,
 }
 
 fn assert_debug<F: Debug>() {}
 
 fn main() {
-    // Does not implement Debug.
-    struct NotDebug;
+    // Does not implement Debug, but its associated type does.
+    struct Id;
 
-    assert_debug::<PhantomData<NotDebug>>();
-    assert_debug::<Field<NotDebug>>();
+    impl Trait for Id {
+        type Value = u8;
+    }
+
+    assert_debug::<Field<Id>>();
 }

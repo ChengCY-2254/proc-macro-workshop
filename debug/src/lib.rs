@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, parse_quote, spanned::Spanned, Error};
+use syn::{parse_macro_input, parse_quote, spanned::Spanned, visit::Visit, Error};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -20,6 +22,7 @@ fn do_expand(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
 
 /// 为结构体字段获取实现
 fn dispatcher_input(input: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    // 解析字段
     let struct_name = &input.ident;
     let fields_impl = get_fields_from_driver_input(input, |f| match f {
         syn::Fields::Named(syn::FieldsNamed { ref named, .. }) => Ok(field_named_impl(named)),
@@ -49,6 +52,8 @@ fn dispatcher_input(input: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenS
         }
         Ok(())
     })?;
+    // 获得关联类型
+    let associated_types_map = get_generic_associated_types(input);
     let mut generics = input.generics.clone();
     for g in generics.params.iter_mut() {
         if let syn::GenericParam::Type(t) = g {
@@ -59,7 +64,25 @@ fn dispatcher_input(input: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenS
             {
                 continue;
             }
+
+            if associated_types_map.contains_key(type_param_name)
+                && !field_type_names.contains(type_param_name)
+            {
+                continue;
+            }
             t.bounds.push(parse_quote!(std::fmt::Debug));
+        }
+    }
+    // 处理where子句
+    generics.make_where_clause();
+    for (_, associated_types) in associated_types_map {
+        for associated_type in associated_types {
+            generics
+                .where_clause
+                .as_mut()
+                .unwrap()
+                .predicates
+                .push(parse_quote!(#associated_type:std::fmt::Debug))
         }
     }
     Ok(generate_trait(struct_name, fields_impl, generics))
@@ -185,4 +208,49 @@ where
         return f(fields);
     }
     syn::Result::Err(Error::new(driver_input.span(), "Only Struct can use"))
+}
+
+struct TypePathVisitor {
+    // 筛选条件
+    generic_type_names: Vec<syn::Ident>,
+    // 通过筛选条件获得的路径
+    associated_types: HashMap<syn::Ident, Vec<syn::TypePath>>,
+}
+impl<'ast> syn::visit::Visit<'ast> for TypePathVisitor {
+    fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
+        if node.path.segments.len() >= 2 {
+            let generic_type_name = node.path.segments[0].ident.clone();
+            if self.generic_type_names.contains(&generic_type_name) {
+                self.associated_types
+                    .entry(generic_type_name)
+                    .or_insert(Vec::new())
+                    .push(node.clone())
+            }
+        }
+        syn::visit::visit_type_path(self, node)
+    }
+}
+
+fn get_generic_associated_types(
+    input: &syn::DeriveInput,
+) -> HashMap<syn::Ident, Vec<syn::TypePath>> {
+    //从结构体中获取泛型列表
+    let generic_type_names: Vec<syn::Ident> = input
+        .generics
+        .params
+        .iter()
+        .filter_map(|f| {
+            if let syn::GenericParam::Type(ty) = f {
+                return Some(ty.ident.clone());
+            }
+            None
+        })
+        .collect();
+    //查询结构体中的泛型路径
+    let mut visitor = TypePathVisitor {
+        generic_type_names,
+        associated_types: HashMap::new(),
+    };
+    visitor.visit_derive_input(input);
+    return visitor.associated_types;
 }

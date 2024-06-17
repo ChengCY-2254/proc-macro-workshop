@@ -18,6 +18,7 @@
 //     }
 //
 // The problematic expansion would come out as:
+// 有问题的扩展将如下：
 //
 //     impl<T> Debug for One<T>
 //     where
@@ -35,6 +36,12 @@
 // First, taking into account the relevant standard library impls `impl<T> Debug
 // for Option<T> where T: Debug` and `impl<T> Debug for Box<T> where T: ?Sized +
 // Debug`, we have the following cyclic definition:
+//
+// 这里有两件事不对。
+//
+// 首先，考虑到相关的标准库
+// impls `impl<T> Debug for Option<T> where T: Debug` and `impl<T> Debug for Box<T> where T: ?Sized+Debug`，
+// 我们有以下循环定义：
 //
 //   - One<T> implements Debug if there is an impl for Option<Box<Two<T>>>;
 //   - Option<Box<Two<T>>> implements Debug if there is an impl for Box<Two<T>>;
