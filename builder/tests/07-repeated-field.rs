@@ -55,8 +55,6 @@ fn main() {
         .executable("cargo".to_owned())
         .arg("build".to_owned())
         .arg("--release".to_owned())
-        //我不认为用户忘记设置env字段就需要我们来帮忙进行设置，所以我加上了对env的初始化
-        .env(vec![])
         .build()
         .unwrap();
 

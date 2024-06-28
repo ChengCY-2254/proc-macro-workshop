@@ -8,7 +8,7 @@ fn tests() {
     t.pass("tests/05-method-chaining.rs");
     t.pass("tests/06-optional-field.rs");
     t.pass("tests/07-repeated-field.rs");
-    //预期为错误编译，但是在这里测试失败，这是一个错误。
+    // //预期为错误编译，但是在这里测试失败，这是一个错误。
     t.compile_fail("tests/08-unrecognized-attribute.rs");
     t.pass("tests/09-redefined-prelude-types.rs");
 }
