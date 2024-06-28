@@ -98,14 +98,12 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
                                 if is_ty_wapper(ty, "Vec") {
                                     ty = ty_inner_type(ty).unwrap()
                                 } else {
-                                    // panic!("each标签的属性必须为Vec")
                                     return Err(syn::Error::new(
                                         f.span(),
                                         "each标签的属性必须为Vec",
                                     ));
                                 }
                             } else {
-                                // panic!("builder标签的each属性必须为字符串")
                                 return Err(syn::Error::new(
                                     f.span(),
                                     "builder标签的each属性必须为字符串",
@@ -132,10 +130,6 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
                         };
                         self
                     }
-                    // fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
-                    //     self.#raw_field_name=Some(#raw_field_name);
-                    //     self
-                    // }
                 })
             } else {
                 Ok(quote! {
@@ -147,7 +141,6 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
             }
         })
     } else {
-        // panic!("Builder can only be derived for structs")
         return Err(syn::Error::new(
             input.span(),
             "Builder can only be derived for structs",
@@ -176,9 +169,8 @@ fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<proc_macro
                     if my_attr.is_ok() && my_attr.unwrap().contain_ident("each") {
                         each=true;
                     }
-                }    
+                }
             }
-            
             if is_ty_wapper(&f.ty, "Option") {
                 quote! {
                     #field_name: self.#field_name.clone()
@@ -188,7 +180,6 @@ fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<proc_macro
                     #field_name: self.#field_name.clone().unwrap_or_default()
                 }
             } else {
-                // Ok().unwrap_or_default()
                 quote! {
                     #field_name: self.#field_name.clone().ok_or(concat!("field ",stringify!(#field_name)," is not set"))?
                 }
@@ -210,7 +201,7 @@ fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<proc_macro
         }
     })
 }
-
+/// 从字段中获取标签
 fn get_attribute<'a>(f: &'a Field, ident: &str) -> Vec<&'a Attribute> {
     f.attrs
         .iter()
@@ -234,10 +225,6 @@ fn generated_builder_struct_constructor(
             let field_name = &f.ident;
             let ty = &f.ty;
             if is_ty_wapper(ty, "Option") {
-                // let inner_type = ty_inner_type(ty);
-                // quote! {
-                //     #field_name:std::option::Option<#inner_type>
-                // }
                 quote! {
                     #field_name:#ty
                 }
@@ -252,7 +239,6 @@ fn generated_builder_struct_constructor(
             input.span(),
             "Builder can only be derived for structs",
         ));
-        // panic!("Builder can only be derived for structs")
     };
     Ok(quote! {
         #struct_vis struct #struct_name {
@@ -376,7 +362,9 @@ impl syn::parse::Parse for MyAttribute {
             }
         }
         let v = vec![];
-        let v = parse(input, v)?;
-        Ok(Self { attrs: v })
+
+        Ok(Self {
+            attrs: parse(input, v)?,
+        })
     }
 }
