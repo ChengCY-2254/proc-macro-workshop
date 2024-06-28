@@ -1,320 +1,382 @@
 use proc_macro::TokenStream;
+use quote::{quote, ToTokens};
+use std::convert::AsRef;
+use syn::parse::ParseStream;
+use syn::spanned::Spanned;
+use syn::{parse_macro_input, Attribute, DeriveInput, Field};
 
-use quote::quote;
-use syn::{parse_macro_input, Field, PathSegment};
-
-/// from https://www.youtube.com/watch?v=geovSK3wMB8
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
+    let mut ret = proc_macro2::TokenStream::new();
     let ast = parse_macro_input!(input as syn::DeriveInput);
-    //这是类型标识符
-    let name = &ast.ident;
-    //创建builder类型的新名字，span使用类型标识符的span，以表示是由它派生而来的。当它因原始名字产生错误的时候，它会指出是谁产生的错误。
-    let builder_name = syn::Ident::new(&format!("{}Builder", &name), name.span());
+    // eprintln!("{:#?}", ast);
 
-    #[cfg(feature = "debug")]
-    eprintln!("{:#?}", &ast);
-
-    let fields = if let syn::Data::Struct(syn::DataStruct {
-        fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
-        ..
-    }) = &ast.data
-    {
-        named
+    if let syn::Data::Struct(_) = &ast.data {
+        //生成builder结构体
+        generated_builder_struct_constructor(&ast)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .to_tokens(&mut ret);
+        //生成builder结构体的set方法
+        generated_builder_struct_method(&ast)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .to_tokens(&mut ret);
+        //生成builder结构体的build方法
+        generated_builder_struct_build(&ast)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .to_tokens(&mut ret);
+        //生成宿主结构体的Builder入口实现
+        generated_builder_impl(&ast)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .to_tokens(&mut ret);
     } else {
-        panic!("Builder can only be derived for structs")
+        return syn::Error::new(ast.span(), "Builder必须使用在结构体上")
+            .into_compile_error()
+            .into();
     };
 
-    let optionized = fields.iter().map(|f| {
-        let ty = &f.ty;
-        let name = &f.ident;
-        if ty_is_expect(ty, "Option") {
-            quote! {
-                #name: #ty
-            }
-        } else {
-            quote! {
-                #name: std::option::Option<#ty>
-            }
-        }
-    });
+    ret.into()
+}
 
-    let methods = fields.iter().map(|f| {
-        let ty = &f.ty;
-        let name = &f.ident;
-        if ty_is_expect(ty, "Option") {
-            let inner_ty = ty_inner_type("Option", ty).expect("Option requires generic parameters");
+/// 生成Builder结构体的构造函数
+fn generated_builder_impl(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let impl_struct_name = input.ident.clone();
+
+    let out_struct_name = input.ident.append_str_ident("Builder");
+
+    let init_struct_fields = if let syn::Data::Struct(ref data) = input.data {
+        data.fields.iter().map(|f| {
+            let field_name = &f.ident;
             quote! {
-                pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
-                }
+                #field_name:None
             }
-        } else {
-            quote! {
-                pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
+        })
+    } else {
+        return Err(syn::Error::new(input.span(), "Builder必须使用在结构体上"));
+    };
+    Ok(quote! {
+        impl #impl_struct_name {
+            fn builder()->#out_struct_name{
+                #out_struct_name{
+                    #(#init_struct_fields,)*
                 }
             }
         }
-    });
+    })
+}
+/// 生成Builder结构体的设置方法
+fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let impl_struct = input.ident.append_str_ident("Builder");
+    let struct_fields = if let syn::Data::Struct(ref data) = input.data {
+        data.fields.iter().map(|f| {
+            let mut each = false;
+            let raw_field_name = f.ident.clone().unwrap();
+            let mut each_field_name = None;
+            let mut ty = &f.ty;
+            //检查是否有builder标签
+            let attr: Vec<_> = get_attribute(f, "builder");
 
-    let extend_methods = fields.iter().filter_map(|f| match extend_methods(f) {
-        Some((true, _)) => None,
-        Some((false, method)) => Some(method),
-        None => None,
-    });
-
-    let build_fields = fields.iter().map(|f| {
-        let ty = &f.ty;
-        let name = &f.ident;
-        if ty_is_expect(ty, "Option") {
-            quote! {
-                #name: self.#name.clone()
+            if !attr.is_empty() {
+                if let syn::Meta::List(syn::MetaList { ref tokens, .. }) = attr[0].meta {
+                    let attrbutes: MyAttribute = syn::parse2(tokens.clone()).unwrap();
+                    if attrbutes.attrs.is_empty() {
+                        return Err(syn::Error::new(f.span(), "builder标签必须有属性"));
+                    }
+                    if !attrbutes.contain_idents(vec!["each"].as_ref()) {
+                        let (ident, _) = attrbutes.attrs.last().unwrap();
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            format!("builder标签必须有each属性,当前有一个未知属性{}", ident),
+                        ));
+                    }
+                    for (ident, lit) in attrbutes.attrs {
+                        if ident == "each" {
+                            if let syn::Lit::Str(lit) = lit {
+                                each = true;
+                                each_field_name =
+                                    Some(syn::Ident::new(lit.value().as_str(), lit.span()));
+                                // 默认其类型为Vec，取出内部的类型覆盖掉当前类型
+                                if is_ty_wapper(ty, "Vec") {
+                                    ty = ty_inner_type(ty).unwrap()
+                                } else {
+                                    // panic!("each标签的属性必须为Vec")
+                                    return Err(syn::Error::new(
+                                        f.span(),
+                                        "each标签的属性必须为Vec",
+                                    ));
+                                }
+                            } else {
+                                // panic!("builder标签的each属性必须为字符串")
+                                return Err(syn::Error::new(
+                                    f.span(),
+                                    "builder标签的each属性必须为字符串",
+                                ));
+                            }
+                        }
+                    }
+                }
             }
-        } else {
-            quote! {
-                #name : self.#name.clone().ok_or(concat!("field ",stringify!(#name)," is not set"))?
-            }
-        }
-    });
-    // 构建builder方法字段，只需要获得字段名即可
-    let builder_empty = fields.iter().map(|f| {
-        let name = &f.ident;
-        quote! {
-            #name : None
-        }
-    });
-    // https://docs.rs/quote/latest/quote/macro.quote.html#interpolation
-    let q = quote! {
-        struct #builder_name{
-            #(#optionized,)*
-        }
-        impl #builder_name{
-            #(#methods)*
-            pub fn build(&self) -> std::result::Result<#name,std::boxed::Box<(dyn std::error::Error + 'static) >> {
-                Ok(#name{
-                    #(#build_fields,)*
+            if is_ty_wapper(ty, "Option") {
+                ty = ty_inner_type(ty).unwrap();
+                Ok(quote! {
+                    fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
+                        self.#raw_field_name=Some(#raw_field_name);
+                        self
+                    }
+                })
+            } else if each {
+                Ok(quote! {
+                    fn #each_field_name(&mut self,#each_field_name:#ty)->&mut Self{
+                        match self.#raw_field_name {
+                            Some(ref mut v)=>v.push(#each_field_name),
+                            None=>self.#raw_field_name = Some(vec![#each_field_name])
+                        };
+                        self
+                    }
+                    // fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
+                    //     self.#raw_field_name=Some(#raw_field_name);
+                    //     self
+                    // }
+                })
+            } else {
+                Ok(quote! {
+                    fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
+                        self.#raw_field_name=Some(#raw_field_name);
+                        self
+                    }
                 })
             }
-            #(#extend_methods)*
-
+        })
+    } else {
+        // panic!("Builder can only be derived for structs")
+        return Err(syn::Error::new(
+            input.span(),
+            "Builder can only be derived for structs",
+        ));
+    };
+    let struct_fields = struct_fields.map(|f| f.unwrap_or_else(syn::Error::into_compile_error));
+    Ok(quote! {
+        impl #impl_struct {
+            #(#struct_fields )*
         }
-        impl #name{
-            fn builder()-> #builder_name{
-                #builder_name{
-                    #(#builder_empty,)*
+    })
+}
+
+/// 生成Builder结构体的build方法
+fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let struct_name = input.ident.append_str_ident("Builder");
+    let raw_struct = input.ident.clone();
+    let struct_fields = if let syn::Data::Struct(ref data) = input.data {
+        data.fields.iter().map(|f| {
+            let field_name = &f.ident.clone().unwrap();
+            let mut each = false;
+            let attr: Vec<_> = get_attribute(f,"builder");
+            if !attr.is_empty() {
+                if let syn::Meta::List(syn::MetaList{ref tokens,..}) = attr[0].meta {
+                    let my_attr:syn::Result<MyAttribute> = syn::parse2(tokens.clone());
+                    if my_attr.is_ok() && my_attr.unwrap().contain_ident("each") {
+                        each=true;
+                    }
+                }    
+            }
+            
+            if is_ty_wapper(&f.ty, "Option") {
+                quote! {
+                    #field_name: self.#field_name.clone()
+                }
+            }else if each {
+                quote!{
+                    #field_name: self.#field_name.clone().unwrap_or_default()
+                }
+            } else {
+                // Ok().unwrap_or_default()
+                quote! {
+                    #field_name: self.#field_name.clone().ok_or(concat!("field ",stringify!(#field_name)," is not set"))?
                 }
             }
-        }
+        })
+    } else {
+        return Err(syn::Error::new(input.span(), "Builder必须使用在结构体上"));
     };
-    q.into()
-}
-/// 获得一个类型中的泛型
-/// ```json
-/// ty: Type::Path {
-///     qself: None,
-///     path: Path {
-///         leading_colon: None,
-///         segments: [
-///             PathSegment {
-///                 ident: Ident {
-///                     ident: "Vec",
-///                     span: #0 bytes(1045..1048),
-///                 },
-///                 arguments: PathArguments::AngleBracketed {
-///                     colon2_token: None,
-///                     lt_token: Lt,
-///                     args: [
-///                         GenericArgument::Type(
-///                             Type::Path {
-///                                 qself: None,
-///                                 path: Path {
-///                                     leading_colon: None,
-///                                     segments: [
-///                                         PathSegment {
-///                                             ident: Ident {
-///                                                 ident: "String",
-///                                                 span: #0 bytes(1049..1055),
-///                                             },
-///                                             arguments: PathArguments::None,
-///                                         },
-///                                     ],
-///                                 },
-///                             },
-///                         ),
-///                     ],
-///                     gt_token: Gt,
-///                 },
-///             },
-///         ],
-///  },
-///},
-///
-///
-///```
-fn ty_inner_type<'a>(wrapper: &str, ty: &'a syn::Type) -> Option<&'a syn::Type> {
-    if let syn::Type::Path(ref p) = ty {
-        if p.path.segments.len() != 1 || p.path.segments[0].ident != wrapper {
-            return None;
-        }
-        if let syn::PathArguments::AngleBracketed(ref inner_ty) = p.path.segments[0].arguments {
-            if inner_ty.args.len() != 1 {
-                return None;
-            }
 
-            let inner_ty = inner_ty.args.first().unwrap();
-            if let syn::GenericArgument::Type(ref t) = inner_ty {
-                return Some(t);
+    Ok(quote! {
+        impl #struct_name {
+            pub fn build(&self)->core::result::Result<#raw_struct,std::boxed::Box<dyn std::error::Error + 'static>>{
+                Ok(
+                    #raw_struct{
+                        #(#struct_fields,)*
+                    }
+                )
             }
         }
+    })
+}
+
+fn get_attribute<'a>(f: &'a Field, ident: &str) -> Vec<&'a Attribute> {
+    f.attrs
+        .iter()
+        .filter(|a| {
+            if a.path().is_ident(ident) {
+                return true;
+            }
+            false
+        })
+        .collect()
+}
+
+/// 生成Builder结构体
+fn generated_builder_struct_constructor(
+    input: &DeriveInput,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let struct_name = input.ident.append_str_ident("Builder");
+    let struct_vis = input.vis.clone();
+    let struct_fields = if let syn::Data::Struct(ref data) = input.data {
+        data.fields.iter().map(|f| {
+            let field_name = &f.ident;
+            let ty = &f.ty;
+            if is_ty_wapper(ty, "Option") {
+                // let inner_type = ty_inner_type(ty);
+                // quote! {
+                //     #field_name:std::option::Option<#inner_type>
+                // }
+                quote! {
+                    #field_name:#ty
+                }
+            } else {
+                quote! {
+                    #field_name:std::option::Option<#ty>
+                }
+            }
+        })
+    } else {
+        return Err(syn::Error::new(
+            input.span(),
+            "Builder can only be derived for structs",
+        ));
+        // panic!("Builder can only be derived for structs")
+    };
+    Ok(quote! {
+        #struct_vis struct #struct_name {
+            #(#struct_fields,)*
+        }
+    })
+}
+
+trait SynUtils {
+    fn append_str_ident(&self, s: &str) -> syn::Ident;
+}
+
+impl SynUtils for syn::Ident {
+    fn append_str_ident(&self, s: &str) -> syn::Ident {
+        syn::Ident::new(format!("{}{}", self, s).as_str(), self.span())
     }
-    None
 }
 
-fn ty_is_expect(ty: &syn::Type, type_str: &str) -> bool {
-    if let syn::Type::Path(syn::TypePath { ref path, .. }) = ty {
-        return path.segments.len() == 1 && path.segments[0].ident == type_str;
+/// 判断是否是某个类型
+fn is_ty_wapper(ty: &syn::Type, ty_str: &str) -> bool {
+    if let syn::Type::Path(p) = ty {
+        if p.path.segments.is_empty() {
+            return false;
+        }
+        if let Some(path_segement) = p.path.segments.last() {
+            if path_segement.ident == ty_str {
+                return true;
+            }
+        }
     }
     false
 }
-/// 解包参数为Vec的字段类型,将其列表中的类型做成一个方法
-/// 例如下面代码示例，就可以通过标签将env中的参数单独解包出来，成为一个方法，并提供多次调用，依次往其内部添加值
-/// ```rust
-/// use derive_builder::Builder;
-/// #[derive(Builder)]
-/// struct Command{
-///     #[builder(each="e")]
-///     env:Vec<String>
+
+/// 返回一个泛型的内部类型
+#[allow(unused)]
+fn ty_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
+    if let syn::Type::Path(p) = ty {
+        if p.path.segments.is_empty() {
+            return None;
+        }
+
+        if let Some(path_segement) = p.path.segments.last() {
+            if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                ref args,
+                ..
+            }) = path_segement.arguments
+            {
+                return if let Some(syn::GenericArgument::Type(ty)) = args.last() {
+                    Some(ty)
+                } else {
+                    None
+                };
+            }
+        }
+    }
+    None
+}
+
+/// 将 #[xxx(foo="bar",ignore=true,...)]之类的标签解析掉,只关注标签中的值，不关心标签的名字
+/// ``` json Attribute {
+///     attrs: [
+///         (
+///             Ident {
+///                 ident: "each",
+///                 span: #0 bytes(2328..2332),
+///             },
+///             Lit::Str {
+///                 token: "arg",
+///             },
+///         ),
+///         (
+///             Ident {
+///                 ident: "ignore",
+///                 span: #0 bytes(2341..2347),
+///             },
+///             Lit::Bool {
+///                 value: true,
+///             },
+///         ),
+///     ],
 /// }
-///
-/// let command = Command::builder().e("a".to_owned()).e("b".to_owned()).build();
 /// ```
-fn extend_methods(f: &Field) -> Option<(bool, proc_macro2::TokenStream)> {
-    let mut avoid_conflict = false;
-    let name = &f.ident;
-    #[cfg(feature = "debug")]
-    if !f.attrs.is_empty() {
-        eprintln!("{:#?}", f.attrs)
+#[derive(Debug)]
+struct MyAttribute {
+    pub attrs: Vec<(syn::Ident, syn::Lit)>,
+}
+#[allow(dead_code)]
+impl MyAttribute {
+    fn contain_ident(&self, t: &str) -> bool {
+        self.attrs.iter().any(|(i, _)| i == t)
     }
-
-    if f.attrs.is_empty() {
-        #[cfg(feature = "debug")]
-        eprintln!("attr is none");
-        return None;
+    fn contain_idents(&self, ids: &[&str]) -> bool {
+        self.attrs.iter().any(|(i, _)| ids.iter().any(|id| i == id))
     }
-
-    if let Some((_path, tokens)) = take_field_attr(f, "builder") {
-        if let Some(
-            GeneralAttr {
-                ident,
-                punct,
-                literal,
-            },
-            ..,
-        ) = GeneralAttr::parse_from_token_stream(tokens)
-        {
-            if ident != "each" {
-                panic!(r#"expected `builder(each = "...")`"#)
-            }
-            if punct.as_char() != '=' {
-                panic!("expected '=', found {}", punct)
-            }
-            match literal {
-                syn::Lit::Str(s) => {
-                    let inner_ty = ty_inner_type("Vec", &f.ty);
-                    let arg = syn::Ident::new(&s.value(), s.span());
-                    if arg == f.ident.clone().expect("Named fields are required") {
-                        avoid_conflict = true;
-                    }
-                    return Some((
-                        avoid_conflict,
-                        quote! {
-                            pub fn #arg(&mut self,#arg:#inner_ty)->&mut Self{
-                                match self.#name{
-                                    Some(ref mut v)=>{
-                                        v.push(#arg);
-                                    },
-                                    None=>{
-                                        self.#name = Some(vec![#arg])
-                                    }
-                                };
-                                self
-                            }
-                        },
-                    ));
-                }
-                literal => panic!("expected literal, found {:?}", literal),
+    fn get(&self, id: &str) -> Option<&syn::Lit> {
+        for (ident, lit) in self.attrs.iter() {
+            if ident == id {
+                return Some(lit);
             }
         }
+        None
     }
-
-    None
 }
 
-/// 尝试从field中取出指定标签和TokenStream
-fn take_field_attr<'a>(
-    f: &'a Field,
-    expect_attr: &str,
-) -> Option<(&'a PathSegment, &'a proc_macro2::TokenStream)> {
-    for attr in &f.attrs {
-        if let syn::Meta::List(syn::MetaList { path, tokens, .. }) = &attr.meta {
-            if path.segments.is_empty() {
-                return None;
-            }
-            for segment in &path.segments {
-                if segment.ident == expect_attr {
-                    return Some((segment, tokens));
-                }
+impl syn::parse::Parse for MyAttribute {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        fn parse(
+            input: ParseStream,
+            out: Vec<(syn::Ident, syn::Lit)>,
+        ) -> syn::Result<Vec<(syn::Ident, syn::Lit)>> {
+            let mut out = out;
+            let ident: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            let lit: syn::Lit = input.parse()?;
+            out.push((ident, lit));
+            //如果有逗号分割
+            if input.parse::<syn::Token![,]>().is_ok() {
+                parse(input, out)
+            } else {
+                Ok(out)
             }
         }
-    }
-    None
-}
-
-struct GeneralAttr {
-    ident: syn::Ident,
-    punct: proc_macro2::Punct,
-    literal: syn::Lit,
-}
-
-impl syn::parse::Parse for GeneralAttr {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let ident: syn::Ident = input.call(syn::Ident::parse)?;
-        let punct: proc_macro2::Punct = input.call(proc_macro2::Punct::parse)?;
-        let literal: syn::Lit = input.call(syn::Lit::parse)?;
-        Ok(Self {
-            ident,
-            punct,
-            literal,
-        })
-    }
-}
-
-impl GeneralAttr {
-    fn parse_from_token_stream(token_stream: &proc_macro2::TokenStream) -> Option<Self> {
-        let mut tt = token_stream.clone().into_iter();
-
-        let ident = match tt.next().unwrap() {
-            proc_macro2::TokenTree::Ident(ident) => ident,
-            tt => panic!("expeted '{}',but found {}", "Ident", tt),
-        };
-
-        let punct = match tt.next().unwrap() {
-            proc_macro2::TokenTree::Punct(punct) => punct,
-            tt => panic!("expected '{}',but fount {}", "punct", tt),
-        };
-
-        let literal = match tt.next().expect("expected str") {
-            proc_macro2::TokenTree::Literal(literal) => syn::Lit::new(literal),
-            tt => panic!("expected string, but found {}", tt),
-        };
-
-        Some(Self {
-            ident,
-            punct,
-            literal,
-        })
+        let v = vec![];
+        let v = parse(input, v)?;
+        Ok(Self { attrs: v })
     }
 }
