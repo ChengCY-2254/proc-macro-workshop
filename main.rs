@@ -1,68 +1,55 @@
-// There are some cases where no heuristic would be sufficient to infer the
-// right trait bounds based only on the information available during macro
-// expansion.
+// The #[sorted] macro is only defined to work on enum types, so this is a test
+// to ensure that when it's attached to a struct (or anything else) it produces
+// some reasonable error. Your macro will need to look into the syn::Item that
+// it parsed to ensure that it represents an enum, returning an error for any
+// other type of Item such as a struct.
+// [sorted]宏仅被定义为处理enum类型，因此这是一个测试，
+// 以确保当它附加到结构（或其他任何东西）时会产生一些合理的错误。
+// 您的宏需要查看它解析的syn：：Project以确保它代表enum，
+// 并返回任何其他类型的Project（例如struct）的错误。
 //
-// 在某些情况下，没有启发式足以仅根据宏观扩展期间可用的信息来推断正确的特征界限。
+// This is an exercise in exploring how to return errors from procedural macros.
+// The goal is to produce an understandable error message which is tailored to
+// this specific macro (saying that #[sorted] cannot be applied to things other
+// than enum). For this you'll want to look at the syn::Error type, how to
+// construct it, and how to return it.
 //
-// When this happens, we'll turn to attributes as a way for the caller to
-// handwrite the correct trait bounds themselves.
+// 这是一个探索如何从过程宏返回错误的练习。
+// 目标是生成一个可理解的错误消息，该错误消息是针对此特定宏量身定制的（说[排序]不能应用于枚举以外的事物）。为此，您需要查看syn::Error类型，如何构建它，以及如何返回它。
 //
-// 当这种情况发生时，我们将转向属性，作为调用者自己手写正确特征边界的一种方式。
+// Notice that the return value of an attribute macro is simply a TokenStream,
+// not a Result with an error. The syn::Error type provides a method to render
+// your error as a TokenStream containing an invocation of the compile_error
+// macro.
+// 请注意，属性宏的返回值只是一个TokenStream，而不是有错误的结果。
+// syn::Error类型提供了一种将您的错误渲染为包含调用compile_error宏的TokenStream的方法。
 //
-// The impl for Wrapper<T> in the code below will need to include the bounds
-// provided in the `debug(bound = "...")` attribute. When such an attribute is
-// present, also disable all inference of bounds so that the macro does not
-// attach its own `T: Debug` inferred bound.
+// A final tweak you may want to make is to have the `sorted` function delegate
+// to a private helper function which works with Result, so most of the macro
+// can be written with Result-returning functions while the top-level function
+// handles the conversion down to TokenStream.
 //
-// 以下代码中Wrapper<T>的impl需要包括`debug(bound = "...")`属性中提供的边界。
-// 当存在此类属性时，也请禁用所有边界推断，以便宏不会附加自己的“T：调试”推断绑定。
+// 您可能想要做的最后一个调整是将“sorted”函数委托给与Report一起工作的私人助手函数，因此大部分宏都可以用结果返回函数编写，而顶级函数则处理向下转换到TokenStream。
 //
-//     impl<T: Trait> Debug for Wrapper<T>
-//     where
-//         T::Value: Debug,
-//     {...}
 //
-// 可选地，尽管测试套件不涵盖这一点，但也接受单个字段上的`debug(bound = "...")`属性。
-// 这应该只替换根据该字段的类型推断的任何边界，而不删除根据其他字段推断的边界：
+// Resources
 //
-// Optionally, though this is not covered by the test suite, also accept
-// `debug(bound = "...")` attributes on individual fields. This should
-// substitute only whatever bounds are inferred based on that field's type,
-// without removing bounds inferred based on the other fields:
-//
-//     #[derive(CustomDebug)]
-//     pub struct Wrapper<T: Trait, U> {
-//         #[debug(bound = "T::Value: Debug")]
-//         field: Field<T>,
-//         normal: U,
-//     }
+//   - The syn::Error type:
+//     https://docs.rs/syn/2.0/syn/struct.Error.html
 
-use derive_debug::CustomDebug;
-use std::fmt::Debug;
+use sorted::sorted;
 
-pub trait Trait {
-    type Value;
+pub struct Error {
+    kind: ErrorKind,
+    message: String,
 }
-
-#[derive(CustomDebug)]
-#[debug(bound = "T::Value: Debug")]
-pub struct Wrapper<T: Trait> {
-    field: Field<T>,
+#[sorted]
+enum ErrorKind {
+    Io,
+    Syntax,
+    Eof,
 }
-
-#[derive(CustomDebug)]
-struct Field<T: Trait> {
-    values: Vec<T::Value>,
-}
-
-fn assert_debug<F: Debug>() {}
 
 fn main() {
-    struct Id;
-
-    impl Trait for Id {
-        type Value = u8;
-    }
-
-    assert_debug::<Wrapper<Id>>();
+    let a = String::new();
 }

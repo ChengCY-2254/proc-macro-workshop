@@ -1,10 +1,14 @@
 // One of the big things callers will want to do with the sequential indices N
 // is use them as part of an identifier, like f0 f1 f2 etc.
 //
+// 调用者想用顺序索引N做的一件大事是将它们用作标识符的一部分，如f0 f1 f2等。
+//
 // Implement some logic to paste together any Ident followed by `~` followed by
 // our loop variable into a single concatenated identifier.
 //
 // The invocation below will expand to:
+//
+// 实现一些逻辑，将任何标识符后跟`~`后跟我们的循环变量粘贴到单个连接标识符中。下面的调用将扩展到：
 //
 //     fn f1() -> u64 { 1 * 2 }
 //     fn f2() -> u64 { 2 * 2 }
@@ -13,6 +17,10 @@
 // Optionally, also support more flexible arrangements like `f~N~_suffix` ->
 // f0_suffix f1_suffix etc, though the test suite only requires `prefix~N` so
 // you will need to add your own tests for this feature.
+//
+//可选地，还支持更灵活的安排，
+// 如`f~N~_suffix` -> f0_suffix f1_suffix等，
+// 尽管测试只需要`prefix~N`，因此您需要为此功能添加自己的测试。
 //
 //
 // Resources:

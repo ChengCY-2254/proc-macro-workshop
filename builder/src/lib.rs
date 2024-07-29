@@ -1,35 +1,37 @@
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
 use std::convert::AsRef;
+use std::ops::Deref;
 use syn::parse::ParseStream;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, DeriveInput, Field};
+use syn::{parse_macro_input, Attribute, DeriveInput, Error as SynError, Field};
 
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let mut ret = proc_macro2::TokenStream::new();
+    let mut ret = TokenStream2::new();
     let ast = parse_macro_input!(input as syn::DeriveInput);
     // eprintln!("{:#?}", ast);
 
     if let syn::Data::Struct(_) = &ast.data {
         //生成builder结构体
         generated_builder_struct_constructor(&ast)
-            .unwrap_or_else(syn::Error::into_compile_error)
+            .unwrap_or_else(SynError::into_compile_error)
             .to_tokens(&mut ret);
         //生成builder结构体的set方法
         generated_builder_struct_method(&ast)
-            .unwrap_or_else(syn::Error::into_compile_error)
+            .unwrap_or_else(SynError::into_compile_error)
             .to_tokens(&mut ret);
         //生成builder结构体的build方法
         generated_builder_struct_build(&ast)
-            .unwrap_or_else(syn::Error::into_compile_error)
+            .unwrap_or_else(SynError::into_compile_error)
             .to_tokens(&mut ret);
         //生成宿主结构体的Builder入口实现
         generated_builder_impl(&ast)
-            .unwrap_or_else(syn::Error::into_compile_error)
+            .unwrap_or_else(SynError::into_compile_error)
             .to_tokens(&mut ret);
     } else {
-        return syn::Error::new(ast.span(), "Builder必须使用在结构体上")
+        return SynError::new(ast.span(), "Builder必须使用在结构体上")
             .into_compile_error()
             .into();
     };
@@ -38,10 +40,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
 }
 
 /// 生成Builder结构体的构造函数
-fn generated_builder_impl(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+fn generated_builder_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let impl_struct_name = input.ident.clone();
 
-    let out_struct_name = input.ident.append_str_ident("Builder");
+    let out_struct_name = append_str_ident(&input.ident, "Builder");
 
     let init_struct_fields = if let syn::Data::Struct(ref data) = input.data {
         data.fields.iter().map(|f| {
@@ -51,7 +53,7 @@ fn generated_builder_impl(input: &DeriveInput) -> syn::Result<proc_macro2::Token
             }
         })
     } else {
-        return Err(syn::Error::new(input.span(), "Builder必须使用在结构体上"));
+        return Err(SynError::new(input.span(), "Builder必须使用在结构体上"));
     };
     Ok(quote! {
         impl #impl_struct_name {
@@ -64,8 +66,8 @@ fn generated_builder_impl(input: &DeriveInput) -> syn::Result<proc_macro2::Token
     })
 }
 /// 生成Builder结构体的设置方法
-fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let impl_struct = input.ident.append_str_ident("Builder");
+fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let impl_struct = append_str_ident(&input.ident, "Builder");
     let struct_fields = if let syn::Data::Struct(ref data) = input.data {
         data.fields.iter().map(|f| {
             let mut each = false;
@@ -75,20 +77,20 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
             //检查是否有builder标签
             let attr: Vec<_> = get_attribute(f, "builder");
 
-            if !attr.is_empty() {
+            if attr.not_empty() {
                 if let syn::Meta::List(syn::MetaList { ref tokens, .. }) = attr[0].meta {
                     let attrbutes: MyAttribute = syn::parse2(tokens.clone()).unwrap();
-                    if attrbutes.attrs.is_empty() {
-                        return Err(syn::Error::new(f.span(), "builder标签必须有属性"));
+                    if attrbutes.is_empty() {
+                        return Err(SynError::new(f.span(), "builder标签必须有属性"));
                     }
                     if !attrbutes.contain_idents(vec!["each"].as_ref()) {
-                        let (ident, _) = attrbutes.attrs.last().unwrap();
-                        return Err(syn::Error::new(
+                        let (ident, _) = attrbutes.last().unwrap();
+                        return Err(SynError::new(
                             ident.span(),
                             format!("builder标签必须有each属性,当前有一个未知属性{}", ident),
                         ));
                     }
-                    for (ident, lit) in attrbutes.attrs {
+                    for (ident, lit) in attrbutes.iter() {
                         if ident == "each" {
                             if let syn::Lit::Str(lit) = lit {
                                 each = true;
@@ -98,13 +100,10 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
                                 if is_ty_wapper(ty, "Vec") {
                                     ty = ty_inner_type(ty).unwrap()
                                 } else {
-                                    return Err(syn::Error::new(
-                                        f.span(),
-                                        "each标签的属性必须为Vec",
-                                    ));
+                                    return Err(SynError::new(f.span(), "each标签的属性必须为Vec"));
                                 }
                             } else {
-                                return Err(syn::Error::new(
+                                return Err(SynError::new(
                                     f.span(),
                                     "builder标签的each属性必须为字符串",
                                 ));
@@ -141,12 +140,12 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
             }
         })
     } else {
-        return Err(syn::Error::new(
+        return Err(SynError::new(
             input.span(),
             "Builder can only be derived for structs",
         ));
     };
-    let struct_fields = struct_fields.map(|f| f.unwrap_or_else(syn::Error::into_compile_error));
+    let struct_fields = struct_fields.map(|f| f.unwrap_or_else(SynError::into_compile_error));
     Ok(quote! {
         impl #impl_struct {
             #(#struct_fields )*
@@ -155,8 +154,8 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<proc_macr
 }
 
 /// 生成Builder结构体的build方法
-fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let struct_name = input.ident.append_str_ident("Builder");
+fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let struct_name = append_str_ident(&input.ident, "Builder");
     let raw_struct = input.ident.clone();
     let struct_fields = if let syn::Data::Struct(ref data) = input.data {
         data.fields.iter().map(|f| {
@@ -186,7 +185,7 @@ fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<proc_macro
             }
         })
     } else {
-        return Err(syn::Error::new(input.span(), "Builder必须使用在结构体上"));
+        return Err(SynError::new(input.span(), "Builder必须使用在结构体上"));
     };
 
     Ok(quote! {
@@ -215,27 +214,25 @@ fn get_attribute<'a>(f: &'a Field, ident: &str) -> Vec<&'a Attribute> {
 }
 
 /// 生成Builder结构体
-fn generated_builder_struct_constructor(
-    input: &DeriveInput,
-) -> syn::Result<proc_macro2::TokenStream> {
-    let struct_name = input.ident.append_str_ident("Builder");
+fn generated_builder_struct_constructor(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let struct_name = append_str_ident(&input.ident, "Builder");
     let struct_vis = input.vis.clone();
     let struct_fields = if let syn::Data::Struct(ref data) = input.data {
         data.fields.iter().map(|f| {
             let field_name = &f.ident;
-            let ty = &f.ty;
-            if is_ty_wapper(ty, "Option") {
+            let field_ty = &f.ty;
+            if is_ty_wapper(field_ty, "Option") {
                 quote! {
-                    #field_name:#ty
+                    #field_name:#field_ty
                 }
             } else {
                 quote! {
-                    #field_name:std::option::Option<#ty>
+                    #field_name:std::option::Option<#field_ty>
                 }
             }
         })
     } else {
-        return Err(syn::Error::new(
+        return Err(SynError::new(
             input.span(),
             "Builder can only be derived for structs",
         ));
@@ -247,14 +244,9 @@ fn generated_builder_struct_constructor(
     })
 }
 
-trait SynUtils {
-    fn append_str_ident(&self, s: &str) -> syn::Ident;
-}
-
-impl SynUtils for syn::Ident {
-    fn append_str_ident(&self, s: &str) -> syn::Ident {
-        syn::Ident::new(format!("{}{}", self, s).as_str(), self.span())
-    }
+/// 向一个标识符后面添加内容
+fn append_str_ident(ident: &syn::Ident, s: &str) -> syn::Ident {
+    syn::Ident::new(format!("{}{}", ident, s).as_str(), ident.span())
 }
 
 /// 判断是否是某个类型
@@ -322,19 +314,33 @@ fn ty_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
 /// }
 /// ```
 #[derive(Debug)]
-struct MyAttribute {
-    pub attrs: Vec<(syn::Ident, syn::Lit)>,
+struct MyAttribute(Vec<(syn::Ident, syn::Lit)>);
+
+impl Deref for MyAttribute {
+    type Target = Vec<(syn::Ident, syn::Lit)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 #[allow(dead_code)]
 impl MyAttribute {
     fn contain_ident(&self, t: &str) -> bool {
-        self.attrs.iter().any(|(i, _)| i == t)
+        self.iter().any(|(i, _)| i == t)
     }
     fn contain_idents(&self, ids: &[&str]) -> bool {
-        self.attrs.iter().any(|(i, _)| ids.iter().any(|id| i == id))
+        self.iter().any(|(i, _)| ids.iter().any(|id| i == id))
+    }
+    fn for_each(&self, f: impl Fn(&syn::Ident, &syn::Lit)) {
+        if self.is_empty() {
+            return;
+        }
+        for (ident, lit) in self.iter() {
+            f(ident, lit)
+        }
     }
     fn get(&self, id: &str) -> Option<&syn::Lit> {
-        for (ident, lit) in self.attrs.iter() {
+        for (ident, lit) in self.iter() {
             if ident == id {
                 return Some(lit);
             }
@@ -363,8 +369,19 @@ impl syn::parse::Parse for MyAttribute {
         }
         let v = vec![];
 
-        Ok(Self {
-            attrs: parse(input, v)?,
-        })
+        Ok(Self(parse(input, v)?))
+    }
+}
+trait VecExt {
+    fn not_empty(&self) -> bool;
+}
+impl<E> VecExt for Vec<E> {
+    fn not_empty(&self) -> bool {
+        !self.is_empty()
+    }
+}
+impl<'a, E> VecExt for &'a [E] {
+    fn not_empty(&self) -> bool {
+        !self.is_empty()
     }
 }
