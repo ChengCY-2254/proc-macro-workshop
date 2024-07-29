@@ -290,7 +290,8 @@ fn ty_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
 }
 
 /// 将 #[xxx(foo="bar",ignore=true,...)]之类的标签解析掉,只关注标签中的值，不关心标签的名字
-/// ``` json Attribute {
+/// ``` json 
+/// Attribute {
 ///     attrs: [
 ///         (
 ///             Ident {
