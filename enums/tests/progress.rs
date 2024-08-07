@@ -1,0 +1,11 @@
+#[test]
+fn tests() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/00-parse.rs");
+    t.pass("tests/01-collect_enum_ident.rs")
+
+    // TODO: add tests
+    //
+    // t.pass("tests/01-something-that-works.rs");
+    // t.compile_fail("tests/02-some-compiler-error.rs");
+}
