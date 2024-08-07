@@ -57,7 +57,7 @@ fn generated_builder_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
     Ok(quote! {
         impl #impl_struct_name {
-            fn builder()->#out_struct_name{
+            pub fn builder()->#out_struct_name{
                 #out_struct_name{
                     #(#init_struct_fields,)*
                 }
@@ -115,14 +115,14 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<TokenStre
             if is_ty_wapper(ty, "Option") {
                 ty = ty_inner_type(ty).unwrap();
                 Ok(quote! {
-                    fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
+                    pub fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
                         self.#raw_field_name=Some(#raw_field_name);
                         self
                     }
                 })
             } else if each {
                 Ok(quote! {
-                    fn #each_field_name(&mut self,#each_field_name:#ty)->&mut Self{
+                    pub fn #each_field_name(&mut self,#each_field_name:#ty)->&mut Self{
                         match self.#raw_field_name {
                             Some(ref mut v)=>v.push(#each_field_name),
                             None=>self.#raw_field_name = Some(vec![#each_field_name])
@@ -132,7 +132,7 @@ fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<TokenStre
                 })
             } else {
                 Ok(quote! {
-                    fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
+                    pub fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
                         self.#raw_field_name=Some(#raw_field_name);
                         self
                     }
@@ -290,7 +290,7 @@ fn ty_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
 }
 
 /// 将 #[xxx(foo="bar",ignore=true,...)]之类的标签解析掉,只关注标签中的值，不关心标签的名字
-/// ``` json 
+/// ``` json
 /// Attribute {
 ///     attrs: [
 ///         (
@@ -324,7 +324,7 @@ impl Deref for MyAttribute {
         &self.0
     }
 }
-#[allow(dead_code)]
+
 impl MyAttribute {
     fn contain_ident(&self, t: &str) -> bool {
         self.iter().any(|(i, _)| i == t)
@@ -332,14 +332,14 @@ impl MyAttribute {
     fn contain_idents(&self, ids: &[&str]) -> bool {
         self.iter().any(|(i, _)| ids.iter().any(|id| i == id))
     }
-    fn for_each(&self, f: impl Fn(&syn::Ident, &syn::Lit)) {
-        if self.is_empty() {
-            return;
-        }
-        for (ident, lit) in self.iter() {
-            f(ident, lit)
-        }
-    }
+    // fn for_each(&self, f: impl Fn(&syn::Ident, &syn::Lit)) {
+    //     if self.is_empty() {
+    //         return;
+    //     }
+    //     for (ident, lit) in self.iter() {
+    //         f(ident, lit)
+    //     }
+    // }
     fn get(&self, id: &str) -> Option<&syn::Lit> {
         for (ident, lit) in self.iter() {
             if ident == id {
