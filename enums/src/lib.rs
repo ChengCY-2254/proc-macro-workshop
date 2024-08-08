@@ -29,7 +29,7 @@ use syn::parse_macro_input;
 pub fn enums(input: TokenStream) -> TokenStream {
     let mut ret = TokenStream2::new();
     let enum_input = parse_macro_input!(input as syn::DeriveInput);
-    eprintln!("{:#?}", enum_input);
+    // eprintln!("{:#?}", enum_input);
     ret.extend(enum_visitor(&enum_input));
     ret.into()
 }
