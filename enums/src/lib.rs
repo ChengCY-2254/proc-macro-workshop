@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{DeriveInput, Error as SynError, parse_macro_input};
+use syn::{parse_macro_input, DeriveInput, Error as SynError};
 
 /// 为枚举类型生成枚举值的常量
 /// ```rust
@@ -27,13 +27,15 @@ use syn::{DeriveInput, Error as SynError, parse_macro_input};
 ///      }
 ///  }
 /// ```
-#[proc_macro_derive(Enums)]
+#[proc_macro_derive(Enums, attributes(enums_set))]
 pub fn enums(input: TokenStream) -> TokenStream {
     let mut ret = TokenStream2::new();
     let enum_input = parse_macro_input!(input as syn::DeriveInput);
     // eprintln!("{:#?}", enum_input);
     match EnumVisitorConfig::try_from(&enum_input) {
-        Ok(config) => ret.extend(generator_enum_visitor(config)),
+        Ok(config) => config
+            .generator_func(&mut ret)
+            .unwrap_or_else(|e| ret.extend(e.into_compile_error())),
         Err(e) => ret.extend(e.into_compile_error()),
     };
     ret.into()
@@ -46,6 +48,9 @@ struct EnumVisitorConfig<'a> {
     pub raw_enum_ident: &'a syn::Ident,
     ///枚举类型的ast类型
     pub enum_variants: &'a syn::DataEnum,
+    /// 映射的方法名`#[enums_set(fn_name = "xxx")]`
+    // pub fn_name: LazyCell<Option<String>>,
+    pub literal_atters: Vec<model::LiteralAtters>,
 }
 impl<'a> EnumVisitorConfig<'a> {
     ///为枚举名称添加_VALUES后缀以用作常量类型使用
@@ -56,19 +61,69 @@ impl<'a> EnumVisitorConfig<'a> {
             self.raw_enum_ident.span(),
         )
     }
+    ///方法生成
+    fn generator_func(&self, token_stream: &mut TokenStream2) -> syn::Result<()> {
+        let enum_config = self;
+        let vis = enum_config.vis;
+        let raw_enum_ident = enum_config.raw_enum_ident;
+        let enum_ident = enum_config.const_values_ident();
+        let variants = &enum_config.enum_variants.variants;
+
+        let enum_values = variants.into_iter().map(|field| {
+            let field_type = &field.ident.to_string();
+            quote! {
+                #field_type
+            }
+        });
+        //获取方法名
+        let fn_name = if let Some((fn_name, span)) =
+            self.literal_atters.iter().map_while(|s| s.fn_name()).next()
+        {
+            syn::Ident::new(fn_name.as_str(), span)
+        } else {
+            syn::Ident::new("values", raw_enum_ident.span())
+        };
+
+        //生成一个const 常量并实现一个函数来返回这个常量
+        let method_block = quote! {
+            #[doc(hidden)]
+            const #enum_ident:&[&str] = &[#(#enum_values),*];
+            impl #raw_enum_ident{
+                #vis fn #fn_name()->&'static [&'static str]{
+                    #enum_ident
+                }
+            }
+        };
+        token_stream.extend(method_block);
+        Ok(())
+    }
 }
 impl<'a> TryFrom<&'a syn::DeriveInput> for EnumVisitorConfig<'a> {
     type Error = SynError;
-
+    #[inline]
     fn try_from(value: &'a DeriveInput) -> Result<Self, Self::Error> {
         if let syn::Data::Enum(ref enum_variants) = value.data {
             let vis = &value.vis;
             let raw_enum_ident = &value.ident;
-           
+            let attrs = &value.attrs;
+            let attrs = get_attribute(attrs.iter(), "enums_set");
+            let literal_atters = attrs
+                .iter()
+                .map_while(|attr| {
+                    if let syn::Meta::List(syn::MetaList { ref tokens, .. }) = attr.meta {
+                        let literal_atters = syn::parse2::<model::LiteralAtters>(tokens.clone()).unwrap();
+                        Some(literal_atters)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
             Ok(EnumVisitorConfig {
                 vis,
                 raw_enum_ident,
                 enum_variants,
+                literal_atters,
             })
         } else {
             Err(SynError::new(value.ident.span(), "必须为枚举类型"))
@@ -76,28 +131,19 @@ impl<'a> TryFrom<&'a syn::DeriveInput> for EnumVisitorConfig<'a> {
     }
 }
 
-
-fn generator_enum_visitor(enum_config: EnumVisitorConfig) -> TokenStream2 {
-    let vis = enum_config.vis;
-    let raw_enum_ident = enum_config.raw_enum_ident;
-    let enum_ident = enum_config.const_values_ident();
-    let variants = &enum_config.enum_variants.variants;
-
-    let enum_values = variants.into_iter().map(|field| {
-        let field_type = &field.ident.to_string();
-        quote! {
-            #field_type
+/// 过滤标识符
+fn get_attribute<'a, Iter: Iterator<Item = &'a syn::Attribute>>(
+    iter: Iter,
+    ident: &str,
+) -> Vec<syn::Attribute> {
+    iter.filter(|a| {
+        if a.path().is_ident(ident) {
+            return true;
         }
-    });
-    //生成一个const 常量并实现一个函数来返回这个常量
-    quote! {
-        const #enum_ident:&[&str] = &[#(#enum_values),*];
-        impl #raw_enum_ident{
-            #vis fn values()->&'static [&'static str]{
-                #enum_ident
-            }
-        }
-    }
+        false
+    })
+    .map(Clone::clone)
+    .collect()
 }
 
 mod utils {
@@ -106,38 +152,61 @@ mod utils {
     }
 }
 
-mod model{
+mod model {
     use syn::parse::ParseStream;
 
-    #[derive(Debug)]
-    #[allow(dead_code)]
-    struct Attrbute(Vec<(syn::Ident, syn::Lit)>);
-
-    impl syn::parse::Parse for Attrbute {
+    #[derive(Eq, PartialEq, Clone)]
+    pub(crate) struct LiteralAtter {
+        pub name: syn::Ident,
+        pub token: syn::Token![=],
+        pub value: syn::Lit,
+    }
+    impl syn::parse::Parse for LiteralAtter {
         fn parse(input: ParseStream) -> syn::Result<Self> {
-            fn parse(input: ParseStream, out: &mut Vec<(syn::Ident, syn::Lit)>) -> syn::Result<()> {
-                let ident: syn::Ident = input.parse()?;
-                input.parse::<syn::Token![=]>()?;
-                let lit: syn::Lit = input.parse()?;
-                out.push((ident, lit));
-                if input.parse::<syn::Token![,]>().is_ok() {
-                    parse(input, out)
-                } else {
-                    Ok(())
-                }
-            }
-            let mut v = vec![];
-            parse(input, &mut v)?;
-            Ok(Self(v))
+            let name: syn::Ident = input.parse()?;
+            let token: syn::Token![=] = input.parse()?;
+            let value: syn::Lit = input.parse()?;
+
+            Ok(LiteralAtter { name, token, value })
         }
     }
-
-    impl Attrbute {
-        fn contain_ident(&self, t: &str) -> bool {
-            self.0.iter().any(|(i, _)| i == t)
+    ///存储常量标签列表
+    pub(crate) struct LiteralAtters(Vec<LiteralAtter>);
+    impl LiteralAtters {
+        #[inline]
+        pub fn attr(&self, ident: &str) -> Option<&LiteralAtter> {
+            self.0.iter().find(|id| id.name == ident)
         }
-        fn contain_idents(&self, ids: &[&str]) -> bool {
-            self.0.iter().any(|(i, _)| ids.iter().any(|id| i == id))
+        pub fn fn_name(&self) -> Option<(String, proc_macro2::Span)> {
+            let attr = self.attr("fn_name").map(|attr| {
+                if let syn::Lit::Str(ref str) = attr.value {
+                    Some((str.value(), attr.value.span()))
+                } else {
+                    None
+                }
+            });
+            //打平
+            attr.unwrap_or_default()
+        }
+    }
+    impl std::ops::Deref for LiteralAtters {
+        type Target = Vec<LiteralAtter>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl syn::parse::Parse for LiteralAtters {
+        fn parse(input: ParseStream) -> syn::Result<Self> {
+            let mut inner = vec![];
+            inner.push(input.parse::<LiteralAtter>()?);
+            while input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>().ok();
+                //存在逗号分割属性
+                let literal_attr = input.parse::<LiteralAtter>()?;
+                inner.push(literal_attr);
+            }
+            Ok(LiteralAtters(inner))
         }
     }
 }
