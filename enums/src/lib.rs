@@ -1,12 +1,13 @@
 use proc_macro::TokenStream;
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{parse_macro_input, DeriveInput, Error as SynError};
 
 /// 为枚举类型生成枚举值的常量
-/// ```rust
+///```rust
 /// #[derive(derive_enums::Enums)]
+/// #[enums_set(fn_name="enums")]
 /// pub enum Html {
 ///     Body,
 ///     Div,
@@ -27,6 +28,8 @@ use syn::{parse_macro_input, DeriveInput, Error as SynError};
 ///      }
 ///  }
 /// ```
+/// #\[enums_set]标签
+/// fn_name 可以自定义输出的方法名
 #[proc_macro_derive(Enums, attributes(enums_set))]
 pub fn enums(input: TokenStream) -> TokenStream {
     let mut ret = TokenStream2::new();
@@ -34,8 +37,9 @@ pub fn enums(input: TokenStream) -> TokenStream {
     // eprintln!("{:#?}", enum_input);
     match EnumVisitorConfig::try_from(&enum_input) {
         Ok(config) => config
-            .generator_func(&mut ret)
-            .unwrap_or_else(|e| ret.extend(e.into_compile_error())),
+            .generator_func()
+            .unwrap_or_else(SynError::into_compile_error)
+            .to_tokens(&mut ret),
         Err(e) => ret.extend(e.into_compile_error()),
     };
     ret.into()
@@ -62,7 +66,7 @@ impl<'a> EnumVisitorConfig<'a> {
         )
     }
     ///方法生成
-    fn generator_func(&self, token_stream: &mut TokenStream2) -> syn::Result<()> {
+    fn generator_func(&self) -> syn::Result<TokenStream2> {
         let enum_config = self;
         let vis = enum_config.vis;
         let raw_enum_ident = enum_config.raw_enum_ident;
@@ -85,7 +89,7 @@ impl<'a> EnumVisitorConfig<'a> {
         };
 
         //生成一个const 常量并实现一个函数来返回这个常量
-        let method_block = quote! {
+        Ok(quote! {
             #[doc(hidden)]
             const #enum_ident:&[&str] = &[#(#enum_values),*];
             impl #raw_enum_ident{
@@ -93,9 +97,7 @@ impl<'a> EnumVisitorConfig<'a> {
                     #enum_ident
                 }
             }
-        };
-        token_stream.extend(method_block);
-        Ok(())
+        })
     }
 }
 impl<'a> TryFrom<&'a syn::DeriveInput> for EnumVisitorConfig<'a> {
@@ -106,12 +108,13 @@ impl<'a> TryFrom<&'a syn::DeriveInput> for EnumVisitorConfig<'a> {
             let vis = &value.vis;
             let raw_enum_ident = &value.ident;
             let attrs = &value.attrs;
-            let attrs = get_attribute(attrs.iter(), "enums_set");
+            let attrs = utils::get_attribute(attrs.iter(), "enums_set");
             let literal_atters = attrs
                 .iter()
                 .map_while(|attr| {
                     if let syn::Meta::List(syn::MetaList { ref tokens, .. }) = attr.meta {
-                        let literal_atters = syn::parse2::<model::LiteralAtters>(tokens.clone()).unwrap();
+                        let literal_atters =
+                            syn::parse2::<model::LiteralAtters>(tokens.clone()).unwrap();
                         Some(literal_atters)
                     } else {
                         None
@@ -131,24 +134,24 @@ impl<'a> TryFrom<&'a syn::DeriveInput> for EnumVisitorConfig<'a> {
     }
 }
 
-/// 过滤标识符
-fn get_attribute<'a, Iter: Iterator<Item = &'a syn::Attribute>>(
-    iter: Iter,
-    ident: &str,
-) -> Vec<syn::Attribute> {
-    iter.filter(|a| {
-        if a.path().is_ident(ident) {
-            return true;
-        }
-        false
-    })
-    .map(Clone::clone)
-    .collect()
-}
 
 mod utils {
     pub fn append_str_ident(ident: &str, s: &str, span: proc_macro2::Span) -> syn::Ident {
         syn::Ident::new(format!("{}{}", ident, s).as_str(), span)
+    }
+    /// 过滤标识符
+    pub(crate) fn get_attribute<'a, Iter: Iterator<Item = &'a syn::Attribute>>(
+        iter: Iter,
+        ident: &str,
+    ) -> Vec<syn::Attribute> {
+        iter.filter(|a| {
+            if a.path().is_ident(ident) {
+                return true;
+            }
+            false
+        })
+            .map(Clone::clone)
+            .collect()
     }
 }
 

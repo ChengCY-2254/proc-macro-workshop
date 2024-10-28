@@ -1,388 +1,331 @@
+//! 为一个结构体配置Builder构建器
+#![deny(unused)]
+#![deny(unused_imports)]
+#![deny(unused_mut)]
+#![deny(unused_variables)]
+#![deny(dead_code)]
+#![deny(unused_extern_crates)]
+#![deny(non_camel_case_types)]
+#![deny(missing_docs)]
+#![deny(unused_doc_comments)]
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote, ToTokens};
-use std::convert::AsRef;
-use std::ops::Deref;
-use syn::parse::ParseStream;
-use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, DeriveInput, Error as SynError, Field};
+use quote::{format_ident, quote, ToTokens};
+use syn::{parse_macro_input, DeriveInput};
 
+#[macro_use]
+mod macros;
+mod utils;
+
+/// 为结构体生成`Builder`方法  
+/// 例如
+/// ```rust
+/// use derive_builder::Builder;
+///
+/// #[derive(Builder)]
+/// pub struct Command{
+///     executable:String,
+///     args:Vec<String>,
+///     env:Vec<String>,
+///     current_dir:String,
+/// }
+/// ```
+/// 则生成
+/// ```ignore
+///# pub struct Command{
+///#     executable:String,
+///#     args:Vec<String>,
+///#     env:Vec<String>,
+///#     current_dir:String,
+///# }
+/// pub struct CommandBuilder {
+///         executable: core::option::Option<String>,
+///         args: core::option::Option<Vec<String>>,
+///         env: core::option::Option<Vec<String>>,
+///         current_dir: core::option::Option<String>,
+///  }
+/// impl Command {
+///     pub fn builder() -> CommandBuilder {
+///         CommandBuilder {
+///             executable: None,
+///             args: None,
+///             env: None,
+///             current_dir: None,
+///       }         
+///     }     
+/// }
+///
+/// ```
+///
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let mut ret = TokenStream2::new();
     let ast = parse_macro_input!(input as syn::DeriveInput);
-    // eprintln!("{:#?}", ast);
-
-    if let syn::Data::Struct(_) = &ast.data {
-        //生成builder结构体
-        generated_builder_struct_constructor(&ast)
-            .unwrap_or_else(SynError::into_compile_error)
-            .to_tokens(&mut ret);
-        //生成builder结构体的set方法
-        generated_builder_struct_method(&ast)
-            .unwrap_or_else(SynError::into_compile_error)
-            .to_tokens(&mut ret);
-        //生成builder结构体的build方法
-        generated_builder_struct_build(&ast)
-            .unwrap_or_else(SynError::into_compile_error)
-            .to_tokens(&mut ret);
-        //生成宿主结构体的Builder入口实现
-        generated_builder_impl(&ast)
-            .unwrap_or_else(SynError::into_compile_error)
-            .to_tokens(&mut ret);
-    } else {
-        return SynError::new(ast.span(), "Builder必须使用在结构体上")
-            .into_compile_error()
-            .into();
+    let config = unwrap!(BuilderConfig::try_from(&ast));
+    // The ret is function result
+    let mut ret = TokenStream2::new();
+    let mut append = |f: fn(&BuilderConfig) -> Result<TokenStream2, syn::Error>| {
+        f(&config)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .to_tokens(&mut ret)
     };
+    // Generate the builder struct
+    append(Generator::generate_builder_struct);
+    // Generate the builder impl
+    append(Generator::generate_builder_impl);
+    // Generate the builder setter
+    append(Generator::generate_builder_setter);
+    // Generate the builder build func
+    append(Generator::generate_builder_build);
 
     ret.into()
 }
 
-/// 生成Builder结构体的构造函数
-fn generated_builder_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    let impl_struct_name = input.ident.clone();
-
-    let out_struct_name = append_str_ident(&input.ident, "Builder");
-
-    let init_struct_fields = if let syn::Data::Struct(ref data) = input.data {
-        data.fields.iter().map(|f| {
-            let field_name = &f.ident;
-            quote! {
-                #field_name:None
-            }
-        })
-    } else {
-        return Err(SynError::new(input.span(), "Builder必须使用在结构体上"));
-    };
-    Ok(quote! {
-        impl #impl_struct_name {
-            pub fn builder()->#out_struct_name{
-                #out_struct_name{
-                    #(#init_struct_fields,)*
-                }
-            }
-        }
-    })
-}
-/// 生成Builder结构体的设置方法
-fn generated_builder_struct_method(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    let impl_struct = append_str_ident(&input.ident, "Builder");
-    let struct_fields = if let syn::Data::Struct(ref data) = input.data {
-        data.fields.iter().map(|f| {
-            let mut each = false;
-            let raw_field_name = f.ident.clone().unwrap();
-            let mut each_field_name = None;
-            let mut ty = &f.ty;
-            //检查是否有builder标签
-            let attr: Vec<_> = get_attribute(f, "builder");
-
-            if attr.not_empty() {
-                if let syn::Meta::List(syn::MetaList { ref tokens, .. }) = attr[0].meta {
-                    let attrbutes: MyAttribute = syn::parse2(tokens.clone()).unwrap();
-                    if attrbutes.is_empty() {
-                        return Err(SynError::new(f.span(), "builder标签必须有属性"));
-                    }
-                    if !attrbutes.contain_idents(vec!["each"].as_ref()) {
-                        let (ident, _) = attrbutes.last().unwrap();
-                        return Err(SynError::new(
-                            ident.span(),
-                            format!("builder标签必须有each属性,当前有一个未知属性{}", ident),
-                        ));
-                    }
-                    for (ident, lit) in attrbutes.iter() {
-                        if ident == "each" {
-                            if let syn::Lit::Str(lit) = lit {
-                                each = true;
-                                each_field_name =
-                                    Some(syn::Ident::new(lit.value().as_str(), lit.span()));
-                                // 默认其类型为Vec，取出内部的类型覆盖掉当前类型
-                                if is_ty_wapper(ty, "Vec") {
-                                    ty = ty_inner_type(ty).unwrap()
-                                } else {
-                                    return Err(SynError::new(f.span(), "each标签的属性必须为Vec"));
-                                }
-                            } else {
-                                return Err(SynError::new(
-                                    f.span(),
-                                    "builder标签的each属性必须为字符串",
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            if is_ty_wapper(ty, "Option") {
-                ty = ty_inner_type(ty).unwrap();
-                Ok(quote! {
-                    pub fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
-                        self.#raw_field_name=Some(#raw_field_name);
-                        self
-                    }
-                })
-            } else if each {
-                Ok(quote! {
-                    pub fn #each_field_name(&mut self,#each_field_name:#ty)->&mut Self{
-                        match self.#raw_field_name {
-                            Some(ref mut v)=>v.push(#each_field_name),
-                            None=>self.#raw_field_name = Some(vec![#each_field_name])
-                        };
-                        self
-                    }
-                })
-            } else {
-                Ok(quote! {
-                    pub fn #raw_field_name(&mut self,#raw_field_name:#ty)->&mut Self{
-                        self.#raw_field_name=Some(#raw_field_name);
-                        self
-                    }
-                })
-            }
-        })
-    } else {
-        return Err(SynError::new(
-            input.span(),
-            "Builder can only be derived for structs",
-        ));
-    };
-    let struct_fields = struct_fields.map(|f| f.unwrap_or_else(SynError::into_compile_error));
-    Ok(quote! {
-        impl #impl_struct {
-            #(#struct_fields )*
-        }
-    })
-}
-
-/// 生成Builder结构体的build方法
-fn generated_builder_struct_build(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    let struct_name = append_str_ident(&input.ident, "Builder");
-    let raw_struct = input.ident.clone();
-    let struct_fields = if let syn::Data::Struct(ref data) = input.data {
-        data.fields.iter().map(|f| {
-            let field_name = &f.ident.clone().unwrap();
-            let mut each = false;
-            let attr: Vec<_> = get_attribute(f,"builder");
-            if !attr.is_empty() {
-                if let syn::Meta::List(syn::MetaList{ref tokens,..}) = attr[0].meta {
-                    let my_attr:syn::Result<MyAttribute> = syn::parse2(tokens.clone());
-                    if my_attr.is_ok() && my_attr.unwrap().contain_ident("each") {
-                        each=true;
-                    }
-                }
-            }
-            if is_ty_wapper(&f.ty, "Option") {
-                quote! {
-                    #field_name: self.#field_name.clone()
-                }
-            }else if each {
-                quote!{
-                    #field_name: self.#field_name.clone().unwrap_or_default()
-                }
-            } else {
-                quote! {
-                    #field_name: self.#field_name.clone().ok_or(concat!("field ",stringify!(#field_name)," is not set"))?
-                }
-            }
-        })
-    } else {
-        return Err(SynError::new(input.span(), "Builder必须使用在结构体上"));
-    };
-
-    Ok(quote! {
-        impl #struct_name {
-            pub fn build(&self)->core::result::Result<#raw_struct,std::boxed::Box<dyn std::error::Error + 'static>>{
-                Ok(
-                    #raw_struct{
-                        #(#struct_fields,)*
-                    }
-                )
-            }
-        }
-    })
-}
-/// 从字段中获取标签
-fn get_attribute<'a>(f: &'a Field, ident: &str) -> Vec<&'a Attribute> {
-    f.attrs
-        .iter()
-        .filter(|a| {
-            if a.path().is_ident(ident) {
-                return true;
-            }
-            false
-        })
-        .collect()
-}
-
-/// 生成Builder结构体
-fn generated_builder_struct_constructor(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    let struct_name = append_str_ident(&input.ident, "Builder");
-    let struct_vis = input.vis.clone();
-    let struct_fields = if let syn::Data::Struct(ref data) = input.data {
-        data.fields.iter().map(|f| {
-            let field_name = &f.ident;
-            let field_ty = &f.ty;
-            if is_ty_wapper(field_ty, "Option") {
-                quote! {
-                    #field_name:#field_ty
-                }
-            } else {
-                quote! {
-                    #field_name:std::option::Option<#field_ty>
-                }
-            }
-        })
-    } else {
-        return Err(SynError::new(
-            input.span(),
-            "Builder can only be derived for structs",
-        ));
-    };
-    Ok(quote! {
-        #struct_vis struct #struct_name {
-            #(#struct_fields,)*
-        }
-    })
-}
-
-/// 向一个标识符后面添加内容
-fn append_str_ident(ident: &syn::Ident, s: &str) -> syn::Ident {
-    syn::Ident::new(format!("{}{}", ident, s).as_str(), ident.span())
-}
-
-/// 判断是否是某个类型
-fn is_ty_wapper(ty: &syn::Type, ty_str: &str) -> bool {
-    if let syn::Type::Path(p) = ty {
-        if p.path.segments.is_empty() {
-            return false;
-        }
-        if let Some(path_segement) = p.path.segments.last() {
-            if path_segement.ident == ty_str {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// 返回一个泛型的内部类型
-#[allow(unused)]
-fn ty_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
-    if let syn::Type::Path(p) = ty {
-        if p.path.segments.is_empty() {
-            return None;
-        }
-
-        if let Some(path_segement) = p.path.segments.last() {
-            if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
-                ref args,
-                ..
-            }) = path_segement.arguments
-            {
-                return if let Some(syn::GenericArgument::Type(ty)) = args.last() {
-                    Some(ty)
-                } else {
-                    None
-                };
-            }
-        }
-    }
-    None
-}
-
-/// 将 #[xxx(foo="bar",ignore=true,...)]之类的标签解析掉,只关注标签中的值，不关心标签的名字
-/// ``` json
-/// Attribute {
-///     attrs: [
-///         (
-///             Ident {
-///                 ident: "each",
-///                 span: #0 bytes(2328..2332),
-///             },
-///             Lit::Str {
-///                 token: "arg",
-///             },
-///         ),
-///         (
-///             Ident {
-///                 ident: "ignore",
-///                 span: #0 bytes(2341..2347),
-///             },
-///             Lit::Bool {
-///                 value: true,
-///             },
-///         ),
-///     ],
-/// }
-/// ```
+/// 所拿到的构建器配置
+/// 所生成的结构体必须是具名字段
 #[derive(Debug)]
-struct MyAttribute(Vec<(syn::Ident, syn::Lit)>);
+#[allow(unused)]
+struct BuilderConfig<'a> {
+    /// 构建器名称
+    name: &'a syn::Ident,
+    /// 构建器访问属性
+    vis: &'a syn::Visibility,
+    /// 构建器字段
+    fields: Vec<&'a syn::Field>,
+    /// 构建器泛型
+    generics: &'a syn::Generics,
+}
 
-impl Deref for MyAttribute {
-    type Target = Vec<(syn::Ident, syn::Lit)>;
+impl<'a> TryFrom<&'a syn::DeriveInput> for BuilderConfig<'a> {
+    type Error = syn::Error;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    /// 生成对[`syn::DeriveInput`]的解析结果
+    fn try_from(input: &'a DeriveInput) -> Result<Self, Self::Error> {
+        let name = &input.ident;
+        let vis = &input.vis;
+        let generics = &input.generics;
+        let fields = if let syn::Data::Struct(ref data_struct) = input.data {
+            data_struct.fields.iter().collect::<Vec<_>>()
+        } else {
+            return Err(Self::Error::new(name.span(), "目前仅支持具名结构体"));
+        };
+
+        Ok(Self {
+            name,
+            vis,
+            fields,
+            generics,
+        })
     }
 }
 
-impl MyAttribute {
-    fn contain_ident(&self, t: &str) -> bool {
-        self.iter().any(|(i, _)| i == t)
-    }
-    fn contain_idents(&self, ids: &[&str]) -> bool {
-        self.iter().any(|(i, _)| ids.iter().any(|id| i == id))
-    }
-    // fn for_each(&self, f: impl Fn(&syn::Ident, &syn::Lit)) {
-    //     if self.is_empty() {
-    //         return;
-    //     }
-    //     for (ident, lit) in self.iter() {
-    //         f(ident, lit)
-    //     }
-    // }
-    fn get(&self, id: &str) -> Option<&syn::Lit> {
-        for (ident, lit) in self.iter() {
-            if ident == id {
-                return Some(lit);
-            }
-        }
-        None
-    }
-}
+/// 结构体生成器，用于生成`Builder`各项内容
+struct Generator;
 
-impl syn::parse::Parse for MyAttribute {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        fn parse(
-            input: ParseStream,
-            out: Vec<(syn::Ident, syn::Lit)>,
-        ) -> syn::Result<Vec<(syn::Ident, syn::Lit)>> {
-            let mut out = out;
-            let ident: syn::Ident = input.parse()?;
-            input.parse::<syn::Token![=]>()?;
-            let lit: syn::Lit = input.parse()?;
-            out.push((ident, lit));
-            //如果有逗号分割
-            if input.parse::<syn::Token![,]>().is_ok() {
-                parse(input, out)
+impl Generator {
+    /// 生成Builder结构体
+    /// # 原结构体
+    /// ```rust
+    ///
+    /// pub struct Command{
+    ///     executable:Option<String>,
+    ///     args:Vec<String>,
+    ///     env:Vec<String>,
+    ///     current_dir:String,
+    /// }
+    /// ```
+    /// ---
+    /// # 生成的Builder
+    /// ```
+    /// pub struct CommandBuilder {
+    ///         executable: core::option::Option<String>,
+    ///         args: core::option::Option<Vec<String>>,
+    ///         env: core::option::Option<Vec<String>>,
+    ///         current_dir: core::option::Option<String>,
+    ///  }
+    pub fn generate_builder_struct(config: &BuilderConfig) -> syn::Result<TokenStream2> {
+        let struct_name = format_ident!("{}Builder", config.name);
+        let vis = config.vis;
+        let fields = config.fields.iter().map(|field| {
+            let field_name = field.ident.as_ref();
+            let ty = &field.ty;
+            if utils::is_option(ty) {
+                quote! {
+                    #field_name: #ty,
+                }
             } else {
-                Ok(out)
+                quote! {
+                    #field_name: core::option::Option<#ty>,
+                }
             }
-        }
-        let v = vec![];
+        });
+        Ok(quote! {
+            #vis struct #struct_name{
+                #(#fields)*
+            }
+        })
+    }
 
-        Ok(Self(parse(input, v)?))
+    /// 生成Builder实现
+    /// # 原结构体
+    /// ```rust
+    /// pub struct Command{
+    ///     executable:String,
+    ///     args:Vec<String>,
+    ///     env:Vec<String>,
+    ///     current_dir:String,
+    /// }
+    /// ```
+    /// ---
+    /// # 生成内容
+    /// ```rust
+    ///# pub struct Command{
+    ///#      executable:String,
+    ///#      args:Vec<String>,
+    ///#      env:Vec<String>,
+    ///#      current_dir:String,
+    ///#  }
+    ///pub struct CommandBuilder {
+    ///        executable: core::option::Option<String>,
+    ///        args: core::option::Option<Vec<String>>,
+    ///        env: core::option::Option<Vec<String>>,
+    ///        current_dir: core::option::Option<String>,
+    ///  }
+    ///impl Command {
+    ///    pub fn builder() -> CommandBuilder {
+    ///             CommandBuilder {
+    ///                 executable: None,
+    ///                 args: None,
+    ///                 env: None,
+    ///                 current_dir: None,
+    ///        }
+    ///     }
+    /// }  
+    /// ```
+    pub fn generate_builder_impl(config: &BuilderConfig) -> syn::Result<TokenStream2> {
+        let impl_struct_name = config.name;
+        let builder_struct_name = format_ident!("{}Builder", config.name);
+        let vis = config.vis;
+        let fields = config.fields.iter().map(|f| {
+            let field_name = f.ident.as_ref();
+            quote! {
+                #field_name: None,
+            }
+        });
+        Ok(quote! {
+            impl #impl_struct_name {
+                #vis fn builder() -> #builder_struct_name {
+                    #builder_struct_name {
+                        #(#fields)*
+                    }
+                }
+            }
+        })
     }
-}
-trait VecExt {
-    fn not_empty(&self) -> bool;
-}
-impl<E> VecExt for Vec<E> {
-    fn not_empty(&self) -> bool {
-        !self.is_empty()
+
+    /// 生成Builder的setter方法
+    /// # 生成内容
+    /// ```rust
+    ///# pub struct Command{
+    ///#      executable:String,
+    ///#      args:Vec<String>,
+    ///#      env:Vec<String>,
+    ///#      current_dir:String,
+    ///#  }
+    ///# pub struct CommandBuilder {
+    ///#         executable: core::option::Option<String>,
+    ///#         args: core::option::Option<Vec<String>>,
+    ///#         env: core::option::Option<Vec<String>>,
+    ///#         current_dir: core::option::Option<String>,
+    ///#   }
+    /// impl CommandBuilder{
+    ///     fn executable(&mut self,executable:String)->&mut Self{
+    ///       self.executable = Some(executable);
+    ///       self
+    ///     }
+    /// }
+    /// ```
+    // #[allow(unused)]
+    pub fn generate_builder_setter(config: &BuilderConfig) -> syn::Result<TokenStream2> {
+        let impl_struct_name = format_ident!("{}Builder", config.name);
+        let fields = config.fields.iter().map(|f| {
+            let vis = config.vis;
+            let fn_name = f.ident.as_ref();
+            let field_name = f.ident.as_ref();
+            // 如果是Option类型，就拿出内部类型，如果不是，就沿用类型
+            let ty = {
+                let ty = &f.ty;
+                if utils::is_option(ty) {
+                    utils::inner_type(ty)
+                } else {
+                    Some(ty)
+                }
+            };
+            quote! {
+                #vis fn #fn_name(&mut self,#field_name:#ty)->&mut Self{
+                    self.#field_name = Some(#field_name);
+                    self
+                }
+            }
+        });
+        Ok(quote! {
+            impl #impl_struct_name {
+                #(#fields)*
+            }
+        })
     }
-}
-impl<'a, E> VecExt for &'a [E] {
-    fn not_empty(&self) -> bool {
-        !self.is_empty()
+
+    /// 生成`build`方法
+    /// 需要判断字段是否是[`Option`]，如果是[`Option`]那么它的赋值方法将是
+    /// ```ignore
+    /// x:self.x.clone(),
+    /// ```
+    /// ---
+    /// ```ignore
+    /// impl CommandBuilder {
+    ///       pub fn build(&self) -> core::result::Result<Command, Box<dyn core::error::Error>> {
+    ///           Command {
+    ///               executable: self.executable.clone().ok_or("struct Command not set field executable")?,
+    ///               args: self.args.clone().ok_or("struct Command not set field args")?,
+    ///               env: self.env.clone().ok_or("struct Command not set field env")?,
+    ///               current_dir: self.current_dir.clone().ok_or("struct Command not set field current_dir")?,
+    ///           }
+    ///       }
+    ///   }
+    /// ```
+    pub fn generate_builder_build(config: &BuilderConfig) -> syn::Result<TokenStream2> {
+        let src_struct_name = config.name;
+        let impl_struct_name = format_ident!("{}Builder", config.name);
+        let vis = config.vis;
+
+        let fields = config.fields.iter().map(|f| {
+            let ident = f.ident.as_ref();
+            let ty = &f.ty;
+            let err_msg = format!(
+                "struct {} not set field {}",
+                src_struct_name,
+                ident.unwrap()
+            );
+            // 判断字段是否是option
+            if utils::is_option(ty) {
+                quote! {
+                    #ident: self.#ident.clone()
+                }
+            } else {
+                quote! {
+                    #ident: self.#ident.clone().ok_or(#err_msg)?,
+                }
+            }
+        });
+
+        Ok(quote! {
+            impl #impl_struct_name {
+                #vis fn build(&self)->core::result::Result<#src_struct_name,Box<dyn core::error::Error>>{
+                    Ok(#src_struct_name{
+                        #(#fields)*
+                    })
+                }
+            }
+        })
     }
 }
