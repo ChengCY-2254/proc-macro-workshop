@@ -55,6 +55,8 @@ fn main() {
         .executable("cargo".to_owned())
         .arg("build".to_owned())
         .arg("--release".to_owned())
+        //不要发挥主观能动性，没设置的内容不能替他设置
+        .env(vec![])
         .build()
         .unwrap();
 

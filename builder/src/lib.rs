@@ -57,7 +57,7 @@ mod utils;
 /// }
 ///
 /// ```
-///
+
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as syn::DeriveInput);
@@ -80,6 +80,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     ret.into()
 }
+
+/// 宏所使用的附加标签
+const PROC_ATTR_BUILDER: &str = "builder";
 
 /// 所拿到的构建器配置
 /// 所生成的结构体必须是具名字段
@@ -245,13 +248,16 @@ impl Generator {
     ///     }
     /// }
     /// ```
-    // #[allow(unused)]
     pub fn generate_builder_setter(config: &BuilderConfig) -> syn::Result<TokenStream2> {
         let impl_struct_name = format_ident!("{}Builder", config.name);
         let fields = config.fields.iter().map(|f| {
             let vis = config.vis;
             let fn_name = f.ident.as_ref();
             let field_name = f.ident.as_ref();
+            let attrs = f
+                .attrs
+                .iter()
+                .find(|a| a.path().is_ident(PROC_ATTR_BUILDER));
             // 如果是Option类型，就拿出内部类型，如果不是，就沿用类型
             let ty = {
                 let ty = &f.ty;
@@ -261,7 +267,24 @@ impl Generator {
                     Some(ty)
                 }
             };
+            // option实现了转换到TokenStream的方法
+            let setter = {
+                let mut ret = None;
+                if let (Some(attrs), Some(fn_name)) = (attrs, fn_name) {
+                    if let Some(lit_str) = utils::unwrap_single_attribute(attrs, "each") {
+                        //判断方法是否重复
+                        let fn_is_repeat = fn_name == lit_str.value().as_str();
+                        if !fn_is_repeat {
+                            ret = Self::generate_each_arg_setter(vis,&lit_str, f)
+                        }
+                    }
+                }
+                ret
+            };
+
             quote! {
+                #setter
+
                 #vis fn #fn_name(&mut self,#field_name:#ty)->&mut Self{
                     self.#field_name = Some(#field_name);
                     self
@@ -273,6 +296,31 @@ impl Generator {
                 #(#fields)*
             }
         })
+    }
+    /// 用于解析 `#[builder(each = "arg")]` 标签并生成对应方法
+    /// 它的内部必须是Vec
+    pub fn generate_each_arg_setter(
+        vis: &syn::Visibility,
+        lit_str: &syn::LitStr,
+        f: &syn::Field,
+    ) -> Option<TokenStream2> {
+        let ty = &f.ty;
+        if utils::is_vec(ty) {
+            let ty = utils::inner_type(ty);
+            let field_name = f.ident.as_ref();
+            let fn_name = syn::Ident::new(&lit_str.value(), lit_str.span());
+            let fn_argument = &fn_name;
+            return Some(quote! {
+                #vis fn #fn_name(&mut self,#fn_argument:#ty)->&mut Self{
+                    match self.#field_name{
+                        None =>{self.#field_name = Some(vec![#fn_argument])}
+                        Some(ref mut v) =>{v.push(#fn_argument)}
+                    }
+                    self
+                }
+            });
+        }
+        None
     }
 
     /// 生成`build`方法

@@ -10,7 +10,7 @@
 /// returns: bool
 #[inline]
 pub fn is_option(f: &syn::Type) -> bool {
-    is_type(f,"Option")
+    is_type(f, "Option")
 }
 
 /// 获取一个泛型参数的内部类型
@@ -39,13 +39,13 @@ pub fn inner_type(f: &syn::Type) -> Option<&syn::Type> {
 }
 
 /// 判断是否是某个包装类型，只能判断一级泛型，例如`Vec<String>`和`Option<String>`都会获得`String`类型
-/// 
-/// # Arguments 
-/// 
+///
+/// # Arguments
+///
 /// * `f`: 一个类型 [syn::Type]
 /// * `ty_name`: 例如`Vec`、`Option`
-/// 
-/// returns: bool 
+///
+/// returns: bool
 #[inline]
 pub fn is_type(f: &syn::Type, ty_name: &str) -> bool {
     if let syn::Type::Path(syn::TypePath { path, .. }) = f {
@@ -55,4 +55,50 @@ pub fn is_type(f: &syn::Type, ty_name: &str) -> bool {
         }
     }
     false
+}
+/// 判断是否是Vec
+///
+/// # Arguments
+///
+/// * `f`: a [`syn::Type`]
+///
+/// returns: bool
+#[inline]
+pub fn is_vec(ty: &syn::Type) -> bool {
+    is_type(ty, "Vec")
+}
+
+/// 判断一个标签中是否存在特定标签，如果存在，那么就取出为 `syn::LitStr`
+///
+/// # Arguments
+///
+/// * `attr` 是需要判断的标签
+/// * `target_attr` 标签中的内部名称
+///
+/// returns: `Option<syn::LitStr>`
+///
+/// # Example
+/// ```ignore
+/// use syn::parse_quote;
+/// let attrbute:syn::Attribute = parse_quote!(
+///     #[builder(each = "arg")]
+/// );
+/// if let Some(lit_str)=unwrap_single_attribute(&attrbute,"each"){
+/// ...
+/// }
+/// ```
+pub fn unwrap_single_attribute(attr: &syn::Attribute, target_attr: &str) -> Option<syn::LitStr> {
+    if let Ok(meta) = attr.parse_args::<syn::MetaNameValue>() {
+        if meta.path.is_ident(target_attr) {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = meta.value
+            {
+                return Some(lit_str);
+            }
+        }
+    }
+
+    None
 }
