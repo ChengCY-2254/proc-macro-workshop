@@ -11,11 +11,13 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote, ToTokens};
+use quote::{quote, ToTokens};
+use syn::spanned::Spanned;
 use syn::{parse_macro_input, DeriveInput};
 
 #[macro_use]
 mod macros;
+mod config;
 mod utils;
 
 /// 为结构体生成`Builder`方法  
@@ -60,7 +62,7 @@ mod utils;
 
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let ast = parse_macro_input!(input as syn::DeriveInput);
+    let ast = parse_macro_input!(input as DeriveInput);
     let config = unwrap!(BuilderConfig::try_from(&ast));
     // The ret is function result
     let mut ret = TokenStream2::new();
@@ -80,9 +82,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     ret.into()
 }
-
-/// 宏所使用的附加标签
-const PROC_ATTR_BUILDER: &str = "builder";
 
 /// 所拿到的构建器配置
 /// 所生成的结构体必须是具名字段
@@ -147,7 +146,7 @@ impl Generator {
     ///         current_dir: core::option::Option<String>,
     ///  }
     pub fn generate_builder_struct(config: &BuilderConfig) -> syn::Result<TokenStream2> {
-        let struct_name = format_ident!("{}Builder", config.name);
+        let struct_name = utils::get_builder_struct_ident(config.name);
         let vis = config.vis;
         let fields = config.fields.iter().map(|field| {
             let field_name = field.ident.as_ref();
@@ -207,7 +206,7 @@ impl Generator {
     /// ```
     pub fn generate_builder_impl(config: &BuilderConfig) -> syn::Result<TokenStream2> {
         let impl_struct_name = config.name;
-        let builder_struct_name = format_ident!("{}Builder", config.name);
+        let builder_struct_name = utils::get_builder_struct_ident(config.name);
         let vis = config.vis;
         let fields = config.fields.iter().map(|f| {
             let field_name = f.ident.as_ref();
@@ -227,37 +226,20 @@ impl Generator {
     }
 
     /// 生成Builder的setter方法
-    /// # 生成内容
-    /// ```rust
-    ///# pub struct Command{
-    ///#      executable:String,
-    ///#      args:Vec<String>,
-    ///#      env:Vec<String>,
-    ///#      current_dir:String,
-    ///#  }
-    ///# pub struct CommandBuilder {
-    ///#         executable: core::option::Option<String>,
-    ///#         args: core::option::Option<Vec<String>>,
-    ///#         env: core::option::Option<Vec<String>>,
-    ///#         current_dir: core::option::Option<String>,
-    ///#   }
-    /// impl CommandBuilder{
-    ///     fn executable(&mut self,executable:String)->&mut Self{
-    ///       self.executable = Some(executable);
-    ///       self
-    ///     }
-    /// }
-    /// ```
     pub fn generate_builder_setter(config: &BuilderConfig) -> syn::Result<TokenStream2> {
-        let impl_struct_name = format_ident!("{}Builder", config.name);
+        let impl_struct_name = utils::get_builder_struct_ident(config.name);
         let fields = config.fields.iter().map(|f| {
+            //可见性
             let vis = config.vis;
+            //方法名
             let fn_name = f.ident.as_ref();
+            //字段名
             let field_name = f.ident.as_ref();
+            //字段标签builder
             let attrs = f
                 .attrs
                 .iter()
-                .find(|a| a.path().is_ident(PROC_ATTR_BUILDER));
+                .find(|a| a.path().is_ident(config::PROC_ATTR_BUILDER));
             // 如果是Option类型，就拿出内部类型，如果不是，就沿用类型
             let ty = {
                 let ty = &f.ty;
@@ -270,18 +252,34 @@ impl Generator {
             // option实现了转换到TokenStream的方法
             let setter = {
                 let mut ret = None;
-                if let (Some(attrs), Some(fn_name)) = (attrs, fn_name) {
-                    if let Some(lit_str) = utils::unwrap_single_attribute(attrs, "each") {
+                //fn_name是始终存在的，在这里解包是为了方便使用
+                if let (Some(attr), Some(fn_name)) = (attrs, fn_name) {
+                    if let Some(lit_str) =
+                        utils::unwrap_single_attribute(attr, config::BUILDER_EACH_KEY)
+                    {
                         //判断方法是否重复
                         let fn_is_repeat = fn_name == lit_str.value().as_str();
                         if !fn_is_repeat {
-                            ret = Self::generate_each_arg_setter(vis,&lit_str, f)
+                            ret = Self::generate_each_arg_setter(vis, &lit_str, f)
                         }
+                    } else {
+                        let ident: Option<syn::Ident> =
+                            utils::meta_name_value_attr_left_value(attr);
+                        let err = syn::Error::new(
+                            attr.span(),
+                            format!(
+                                "builder标签必须有{}属性,当前有一个未知属性{}",
+                                config::BUILDER_EACH_KEY,
+                                ident.unwrap()
+                            ),
+                        );
+                        panic!("{}", err)
                     }
                 }
                 ret
             };
-
+            // 生成每个字段的setter方法
+            // setter是一个Option，所以可以直接放入这里，如果和方法名重复了那么它就为None。
             quote! {
                 #setter
 
@@ -343,7 +341,7 @@ impl Generator {
     /// ```
     pub fn generate_builder_build(config: &BuilderConfig) -> syn::Result<TokenStream2> {
         let src_struct_name = config.name;
-        let impl_struct_name = format_ident!("{}Builder", config.name);
+        let impl_struct_name = utils::get_builder_struct_ident(config.name);
         let vis = config.vis;
 
         let fields = config.fields.iter().map(|f| {
@@ -368,7 +366,7 @@ impl Generator {
 
         Ok(quote! {
             impl #impl_struct_name {
-                #vis fn build(&self)->core::result::Result<#src_struct_name,Box<dyn core::error::Error>>{
+                #vis fn build(&self)->core::result::Result<#src_struct_name,std::boxed::Box<dyn core::error::Error>>{
                     Ok(#src_struct_name{
                         #(#fields)*
                     })

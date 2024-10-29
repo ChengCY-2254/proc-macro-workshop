@@ -1,6 +1,9 @@
 //! 存放一些快捷判断逻辑
 #![allow(dead_code)]
 
+use quote::format_ident;
+use crate::config;
+
 /// 判断是否是Option
 ///
 /// # Arguments
@@ -101,4 +104,25 @@ pub fn unwrap_single_attribute(attr: &syn::Attribute, target_attr: &str) -> Opti
     }
 
     None
+}
+
+/// 获取一个`syn::MetaNameValue`attr的左值，用于打印日志
+pub fn meta_name_value_attr_left_value(attr: &syn::Attribute) -> Option<syn::Ident> {
+    if let Ok(ref meta) = attr.parse_args::<syn::MetaNameValue>() {
+        return meta.path.get_ident().cloned();
+    }
+    None
+}
+
+/// 格式化一个将原标识符格式化为Builder构建器所需标识符
+/// # Arguments
+/// * `src_ident`: 目标结构体的原始名称 
+///   
+/// 原标识符  
+/// `Command`  
+/// 现标识符  
+/// `CommandBuilder` 
+#[inline]
+pub fn get_builder_struct_ident(src_ident:&syn::Ident)->syn::Ident{
+    format_ident!("{}{}",src_ident,config::BUILDER_SUFFIX)
 }
